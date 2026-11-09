@@ -2,7 +2,7 @@
 // 速度：Windows 本机列目录走 node（约 80ms），PowerShell 仅作兜底（约 1.4s）。
 // 菜单：默认应用打开、复制相对/绝对路径、把 @路径 插入 agent 的输入行。
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
 import {
   spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window,
   props, openOverlay, closeOverlay, run, notify,
@@ -37,6 +37,13 @@ function rollup(marks) {
 }
 
 const platform = () => window()?.platform ?? "linux";
+
+// 放大/看 diff 的浮窗：不传 key，每次都由宿主居中打开；开新的先关旧的。
+const opened = { big: null, diff: null };
+const reopen = (slot, spec) => {
+  if (opened[slot]) closeOverlay(opened[slot]);
+  opened[slot] = openOverlay(spec);
+};
 
 const FILE_ICON = {
   ts: "typescript", tsx: "react", js: "javascript", jsx: "react", mjs: "javascript", cjs: "javascript",
@@ -123,6 +130,15 @@ export default class Filescout extends View {
       return;
     }
     this.mode = "browser";
+    // Markdown 默认看渲染后的样子，可切回源码。
+    this.mdView = true;
+    // diff 默认单栏（面板窄），可切分栏。
+    this.split = Boolean(p.wide);
+    // 从别的实例点"放大"打开时，带走当前正在预览的文件。
+    this.overlay = p.overlay ?? null;
+    this.openedFile = p.file ?? null;
+    this.diffFile = p.diff ?? null;
+    this.fixed = p.root ? { cwd: p.root, on: p.on ?? null } : null;
     this.saved = new Map();
     this.entries = new Map();
     this.folders = new Set();
@@ -145,8 +161,13 @@ export default class Filescout extends View {
     });
   }
 
+  /** 面板的定位键：浮窗固定在被放大时的目录，普通面板跟着焦点走。 */
+  ctxKey() {
+    return this.fixed ? `fixed:${this.fixed.cwd}` : key();
+  }
+
   current(context) {
-    return this.context === context && key() === context.key;
+    return this.context === context && this.ctxKey() === context.key;
   }
 
   async loadFolder(path, context) {
@@ -159,7 +180,7 @@ export default class Filescout extends View {
   }
 
   refresh(cx) {
-    const { cwd, on } = location(), next = key();
+    const { cwd, on } = this.fixed ?? location(), next = this.ctxKey();
     if (next !== this.context?.key) {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
@@ -167,6 +188,8 @@ export default class Filescout extends View {
       this.pending = new Set(); this.marks = {}; this.dirty = new Map(); this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
+      if (this.openedFile) { this.show(this.openedFile, cx); this.openedFile = null; }
+      if (this.diffFile) { this.showDiff(this.diffFile, cx); this.diffFile = null; }
     }
     if (!cwd || this.loading) return;
     const context = this.context;
@@ -229,7 +252,7 @@ export default class Filescout extends View {
   }
 
   show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
+    this.code?.release(); this.code = null; this.file = path; this.fileError = null; this.text = null; this.diff = false;
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on;
     cx.spawn(async cx => {
@@ -239,12 +262,119 @@ export default class Filescout extends View {
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
         const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
+        this.text = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
         this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
+          value: this.text,
           font_family: settings().font_family, font_size: 12,
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
       } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { cx.notify(); }
+    });
+  }
+
+  /** 把 unified diff 画成带底色和行号的表：合并（单栏）或分栏。 */
+  diffView(t) {
+    const mono = settings().font_family, rows = [], CAP = 3000;
+    const lines = this.diffText.split("\n");
+    const num = n => div().w(34).flex_none().text_right().pr(6).text_color(t.dim).child(n == null ? "" : String(n));
+    const sign = (s, color) => div().w(14).flex_none().text_color(color).child(s);
+    const line = (bg, children) => h_flex().w_full().h(18).flex_none().font_family(mono).text_size(11.5).items_center()
+      .when(Boolean(bg), el => el.bg(bg)).children(children);
+    const ADD = "#98c37926", DEL = "#e06c7526";
+    let oldNo = 0, newNo = 0, i = 0;
+    while (i < lines.length && rows.length < CAP) {
+      const raw = lines[i];
+      if (raw.startsWith("@@")) {
+        const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (m) { oldNo = Number(m[1]); newNo = Number(m[2]); }
+        rows.push(line(t.surface, [div().flex_1().px(8).truncate().text_color(t.ansi4).child(raw)]));
+        i++; continue;
+      }
+      if (/^(diff |index |--- |\+\+\+ |new file|deleted file|old mode|new mode|similarity|rename |Binary )/.test(raw)) {
+        rows.push(line(null, [div().flex_1().px(8).truncate().text_color(t.muted).child(raw)]));
+        i++; continue;
+      }
+      if (raw.startsWith("-")) {
+        const dels = [];
+        while (i < lines.length && lines[i].startsWith("-") && !lines[i].startsWith("---")) dels.push(lines[i++]);
+        const adds = [];
+        while (i < lines.length && lines[i].startsWith("+") && !lines[i].startsWith("+++")) adds.push(lines[i++]);
+        for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+          const d = dels[k], add = adds[k];
+          if (this.split) rows.push(line(null, [
+            h_flex().flex_1().min_w(0).when(Boolean(d), el => el.bg(DEL)).children(d
+              ? [num(oldNo++), sign("-", t.ansi1), div().flex_1().min_w(0).truncate().child(d.slice(1))]
+              : [num(null), sign("", t.dim), div().flex_1()]),
+            div().w(1).flex_none().self_stretch().bg(t.border),
+            h_flex().flex_1().min_w(0).when(Boolean(add), el => el.bg(ADD)).children(add
+              ? [num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(add.slice(1))]
+              : [num(null), sign("", t.dim), div().flex_1()]),
+          ]));
+          else {
+            if (d) rows.push(line(DEL, [num(oldNo++), num(null), sign("-", t.ansi1), div().flex_1().min_w(0).truncate().child(d.slice(1))]));
+            if (add) rows.push(line(ADD, [num(null), num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(add.slice(1))]));
+          }
+        }
+        continue;
+      }
+      if (raw.startsWith("+")) {
+        while (i < lines.length && lines[i].startsWith("+") && !lines[i].startsWith("+++")) {
+          const text = lines[i++].slice(1);
+          if (this.split) rows.push(line(null, [
+            h_flex().flex_1().min_w(0).children([num(null), sign("", t.dim), div().flex_1()]),
+            div().w(1).flex_none().self_stretch().bg(t.border),
+            h_flex().flex_1().min_w(0).bg(ADD).children([num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(text)]),
+          ]));
+          else rows.push(line(ADD, [num(null), num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(text)]));
+        }
+        continue;
+      }
+      if (raw.startsWith(" ")) {
+        const text = raw.slice(1);
+        if (this.split) rows.push(line(null, [
+          h_flex().flex_1().min_w(0).children([num(oldNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]),
+          div().w(1).flex_none().self_stretch().bg(t.border),
+          h_flex().flex_1().min_w(0).children([num(newNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]),
+        ]));
+        else rows.push(line(null, [num(oldNo++), num(newNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]));
+        i++; continue;
+      }
+      i++;
+    }
+    return v_flex().id("filescout-diff").flex_1().min_h(0).overflow_y_scrollbar().overflow_x_hidden().py(4).children(rows);
+  }
+
+  /** 在同一个预览区显示这个文件的改动：git diff HEAD，未跟踪的文件整份算新增。 */
+  showDiff(path, cx) {
+    this.code?.release(); this.code = null; this.file = path; this.text = null; this.diffText = null; this.fileError = null; this.diff = true; this.mdView = false;
+    const context = this.context, root = this.root, on = this.on;
+    cx.spawn(async cx => {
+      try {
+        const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "HEAD", "--", path], { cwd: root, on }).catch(() => null);
+        let text = r?.code === 0 ? r.stdout : "";
+        if (!text) {
+          const body = await readTextFile(`${root}/${path}`, { on });
+          text = body == null ? "" : body.split("\n").map(line => `+${line}`).join("\n");
+        }
+        if (!this.current(context) || this.file !== path) return;
+        if (!text) { this.fileError = "No changes to show"; return; }
+        this.diffText = text;
+      } catch { if (this.current(context) && this.file === path) this.fileError = "Cannot read the diff"; }
+      finally { cx.notify(); }
+    });
+  }
+
+  /** 当前文件是否按 Markdown 渲染（只有 .md/.markdown 有这条路）。 */
+  isMd() {
+    return Boolean(!this.diff && this.file && /\.(md|markdown)$/i.test(this.file));
+  }
+
+  /** 把面板放大成一个浮窗：同一个 mod，换一块更大的地方画。 */
+  expand() {
+    reopen("big", {
+      mod: "filescout", kind: "window", frame: "none",
+      width: 0.9, height: 0.86,
+      props: { root: this.root, on: this.on, file: this.file ?? null },
     });
   }
 
@@ -255,8 +385,9 @@ export default class Filescout extends View {
       kind: "popup",
       at: { x: event.position.x, y: event.position.y },
       width: 280,
-      height: 190,
-      props: { menu: { root: this.root, path, dir: isDir, on: this.on } },
+      // 有变更的文件多一条 View diff，菜单要跟着长高。
+      height: this.marks[path] ? 221 : 190,
+      props: { menu: { root: this.root, path, dir: isDir, on: this.on, mark: this.marks[path] ?? null } },
     });
   }
 
@@ -291,12 +422,24 @@ export default class Filescout extends View {
   menuItems() {
     const open = this.menu.dir ? "Open in file manager" : "Open with default app";
     return [
+      ...(this.menu.mark ? [["View diff", () => this.viewDiff()]] : []),
       [open, () => this.openTarget()],
       ["Copy relative path", (cx) => this.copyPath(this.rel(), "relative path", cx)],
       ["Copy absolute path", (cx) => this.copyPath(this.abs(), "absolute path", cx)],
       ["Insert relative path into agent", (cx) => this.insertPath("@" + (this.menu.path || "."), "relative path", cx)],
       ["Insert absolute path into agent", (cx) => this.insertPath("@" + this.abs(), "absolute path", cx)],
     ];
+  }
+
+  /** 在浮窗里看这个文件的改动（未跟踪的文件整份按新增显示）。 */
+  viewDiff() {
+    const { root, path, on } = this.menu;
+    closeOverlay(props().overlay);
+    reopen("diff", {
+      mod: "filescout", kind: "window", frame: "none",
+      width: 0.72, height: 0.8,
+      props: { root, on, diff: path, wide: true },
+    });
   }
 
   async openTarget() {
@@ -383,7 +526,7 @@ export default class Filescout extends View {
 
   render(cx) {
     if (this.mode === "menu") return this.renderMenu(cx);
-    if (key() !== this.context?.key) this.refresh(cx);
+    if (this.ctxKey() !== this.context?.key) this.refresh(cx);
     const t = theme(), count = Object.keys(this.marks).length;
     return v_flex().id("filescout").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -392,10 +535,19 @@ export default class Filescout extends View {
         .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(`${count} files`)))
         .when(this.stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${this.stat.added}`)))
         .when(this.stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${this.stat.removed}`)))
+        .when(Boolean(this.diff), el => el.child(div().id("filescout-split").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.split = !this.split; cx.notify(); }).child(this.split ? "合并" : "分栏")))
+        .when(this.isMd(), el => el.child(div().id("filescout-md-toggle").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.mdView = !this.mdView; cx.notify(); }).child(this.mdView ? "源码" : "预览")))
+        .when(!this.overlay, el => el.child(div().id("filescout-max").w(18).cursor_pointer().text_color(t.muted).on_click(() => this.expand()).child(svg("mods/filescout/icons/maximize.svg").size(13))))
+        .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
       .when(!this.file, el => el.child(v_flex().id("filescout-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
-      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+      .when(Boolean(this.file), el => el.child(
+        this.mdView && this.isMd() && this.text != null
+          ? div().id("filescout-md").flex_1().min_h(0).overflow_hidden().p(14)
+              .child(TextView.markdown(`filescout-md-${this.file}`, this.text).selectable(true).scrollable(true))
+          : this.diff ? (this.diffText ? this.diffView(t) : div().p(12).text_color(t.dim).child(this.fileError || "Loading diff…"))
+          : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
   }
 }
