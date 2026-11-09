@@ -27,6 +27,17 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 - 菜单支持 ↑/↓、Enter、Esc
 - VSCode 风格的文件类型图标（Material Icon Theme，MIT）
 
+
+## 语言 / Language
+
+界面文案默认中文。想让这个面板说英文，在布局里给它加 `props`：
+
+```json
+"content": { "mod": "filescout", "props": { "lang": "en" } }
+```
+
+英文界面用同样的键：`lang: "en"`；不写或写别的值都按中文。
+
 ## 安装 / Install
 
 ```sh

@@ -38,6 +38,41 @@ function rollup(marks) {
 
 const platform = () => window()?.platform ?? "linux";
 
+// 界面文案：布局里给这个 mod 的 props 加 {"lang":"en"} 切英文，默认中文。
+const I18N = {
+  zh: {
+    files: n => `${n} 个改动`, split: "分栏", merge: "合并", preview: "预览", source: "源码",
+    openFolder: "在文件管理器中打开", openApp: "用默认程序打开",
+    copyRel: "复制相对路径", copyAbs: "复制绝对路径",
+    insertRel: "把相对路径插入 agent", insertAbs: "把绝对路径插入 agent",
+    diff: "查看 diff",
+    noFiles: "没有文件", noFolder: "没有目录", loadingFiles: "正在读取…", loadingFile: "正在读取文件…", loadingDiff: "正在读取 diff…",
+    limited: "每个目录最多 500 项，总计 5000 项",
+    gone: "这个文件已经不在了", binary: "二进制文件，不预览", previewErr: "无法预览（二进制、过大或读不了）",
+    noDiff: "没有可显示的改动", diffErr: "读不到 diff",
+    openErr: p => `打不开 ${p}`, copied: w => `已复制${w}`, inserted: w => `已插入${w}`,
+    relPath: "相对路径", absPath: "绝对路径", noAgent: "当前标签页里没有 agent 面板",
+  },
+  en: {
+    files: n => `${n} files`, split: "Split", merge: "Unified", preview: "Preview", source: "Source",
+    openFolder: "Open in file manager", openApp: "Open with default app",
+    copyRel: "Copy relative path", copyAbs: "Copy absolute path",
+    insertRel: "Insert relative path into agent", insertAbs: "Insert absolute path into agent",
+    diff: "View diff",
+    noFiles: "No files", noFolder: "No folder", loadingFiles: "Loading files…", loadingFile: "Loading file…", loadingDiff: "Loading diff…",
+    limited: "File list limited to 500 entries per folder and 5,000 total",
+    gone: "This file is no longer available", binary: "Binary file · no text preview", previewErr: "Cannot preview this file (binary, too large, or unreadable)",
+    noDiff: "No changes to show", diffErr: "Cannot read the diff",
+    openErr: p => `Cannot open ${p}`, copied: w => `Copied ${w}`, inserted: w => `Inserted ${w}`,
+    relPath: "relative path", absPath: "absolute path", noAgent: "No agent pane in this tab",
+  },
+};
+const msg = (lang, key, ...args) => {
+  const value = (I18N[lang] ?? I18N.zh)[key] ?? I18N.zh[key];
+  return typeof value === "function" ? value(...args) : value;
+};
+
+
 // 放大/看 diff 的浮窗：不传 key，每次都由宿主居中打开；开新的先关旧的。
 const opened = { big: null, diff: null };
 const reopen = (slot, spec) => {
@@ -86,11 +121,11 @@ function absolute(root, path) {
   return platform() === "windows" ? full.replace(/\//g, "\\") : full;
 }
 
-async function directory(path, on) {
+async function directory(path, on, lang) {
   const powershellDirectory = async () => {
     // Fallback when node is not on PATH: ~1.4s per folder on a typical Windows box.
     const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
-    if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
+    if (r.code !== 0) throw new Error(r.stderr || msg(lang, "listErr"));
     const result = JSON.parse(r.stdout || "[]");
     return Array.isArray(result) ? result : [result];
   };
@@ -111,7 +146,7 @@ async function directory(path, on) {
     if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
     throw e;
   }
-  if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
+  if (r.code !== 0) throw new Error(r.stderr || msg(lang, "listErr"));
   const fields = r.stdout.split("\0"), out = [];
   for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
   return out;
@@ -121,6 +156,7 @@ export default class Filescout extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     const p = props() ?? {};
+    this.lang = p.lang === "en" ? "en" : "zh";
     if (p.menu) {
       // The right-click menu is this same mod, opened as a popup overlay.
       this.mode = "menu";
@@ -172,7 +208,7 @@ export default class Filescout extends View {
 
   async loadFolder(path, context) {
     const { on, cwd: root } = context;
-    const entries = await directory(path ? `${root}/${path}` : root, on);
+    const entries = await directory(path ? `${root}/${path}` : root, on, this.lang);
     if (!this.current(context) || (path && !this.folders.has(path))) return;
     const used = [...this.entries.entries()].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
     this.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used))).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
@@ -259,15 +295,15 @@ export default class Filescout extends View {
       try {
         const text = await readTextFile(`${root}/${path}`, { on });
         if (this.file !== path || !this.current(context)) return;
-        if (text === null) { this.fileError = "This file is no longer available"; return; }
-        if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
+        if (text === null) { this.fileError = this.L("gone"); return; }
+        if (text.includes("\0")) { this.fileError = this.L("binary"); return; }
         const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
         this.text = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
         this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
           value: this.text,
           font_family: settings().font_family, font_size: 12,
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-      } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
+      } catch { if (this.file === path && this.current(context)) this.fileError = this.L("previewErr"); }
       finally { cx.notify(); }
     });
   }
@@ -357,11 +393,15 @@ export default class Filescout extends View {
           text = body == null ? "" : body.split("\n").map(line => `+${line}`).join("\n");
         }
         if (!this.current(context) || this.file !== path) return;
-        if (!text) { this.fileError = "No changes to show"; return; }
+        if (!text) { this.fileError = this.L("noDiff"); return; }
         this.diffText = text;
-      } catch { if (this.current(context) && this.file === path) this.fileError = "Cannot read the diff"; }
+      } catch { if (this.current(context) && this.file === path) this.fileError = this.L("diffErr"); }
       finally { cx.notify(); }
     });
+  }
+
+  L(key, ...args) {
+    return msg(this.lang, key, ...args);
   }
 
   /** 当前文件是否按 Markdown 渲染（只有 .md/.markdown 有这条路）。 */
@@ -374,7 +414,7 @@ export default class Filescout extends View {
     reopen("big", {
       mod: "filescout", kind: "window", frame: "none",
       width: 0.9, height: 0.86,
-      props: { root: this.root, on: this.on, file: this.file ?? null },
+      props: { lang: this.lang, root: this.root, on: this.on, file: this.file ?? null },
     });
   }
 
@@ -387,7 +427,7 @@ export default class Filescout extends View {
       width: 280,
       // 有变更的文件多一条 View diff，菜单要跟着长高。
       height: this.marks[path] ? 221 : 190,
-      props: { menu: { root: this.root, path, dir: isDir, on: this.on, mark: this.marks[path] ?? null } },
+      props: { lang: this.lang, menu: { root: this.root, path, dir: isDir, on: this.on, mark: this.marks[path] ?? null } },
     });
   }
 
@@ -420,14 +460,14 @@ export default class Filescout extends View {
   }
 
   menuItems() {
-    const open = this.menu.dir ? "Open in file manager" : "Open with default app";
+    const open = this.L(this.menu.dir ? "openFolder" : "openApp");
     return [
-      ...(this.menu.mark ? [["View diff", () => this.viewDiff()]] : []),
+      ...(this.menu.mark ? [[this.L("diff"), () => this.viewDiff()]] : []),
       [open, () => this.openTarget()],
-      ["Copy relative path", (cx) => this.copyPath(this.rel(), "relative path", cx)],
-      ["Copy absolute path", (cx) => this.copyPath(this.abs(), "absolute path", cx)],
-      ["Insert relative path into agent", (cx) => this.insertPath("@" + (this.menu.path || "."), "relative path", cx)],
-      ["Insert absolute path into agent", (cx) => this.insertPath("@" + this.abs(), "absolute path", cx)],
+      [this.L("copyRel"), (cx) => this.copyPath(this.rel(), this.L("relPath"), cx)],
+      [this.L("copyAbs"), (cx) => this.copyPath(this.abs(), this.L("absPath"), cx)],
+      [this.L("insertRel"), (cx) => this.insertPath("@" + (this.menu.path || "."), this.L("relPath"), cx)],
+      [this.L("insertAbs"), (cx) => this.insertPath("@" + this.abs(), this.L("absPath"), cx)],
     ];
   }
 
@@ -438,7 +478,7 @@ export default class Filescout extends View {
     reopen("diff", {
       mod: "filescout", kind: "window", frame: "none",
       width: 0.72, height: 0.8,
-      props: { root, on, diff: path, wide: true },
+      props: { lang: this.lang, root, on, diff: path, wide: true },
     });
   }
 
@@ -453,14 +493,14 @@ export default class Filescout extends View {
       const r = await exec(cmd, args, { on: this.menu.on });
       if (r.code !== 0) throw new Error(r.stderr || `exit ${r.code}`);
     } catch (e) {
-      notify({ title: `Cannot open ${path}`, body: String(e), level: "error" });
+      notify({ title: this.L("openErr", path), body: String(e), level: "error" });
     }
   }
 
   copyPath(text, what, cx) {
     cx.write_to_clipboard(text);
     closeOverlay(props().overlay);
-    notify({ title: `Copied ${what}`, body: text, level: "success", timeout: 2500 });
+    notify({ title: this.L("copied", what), body: text, level: "success", timeout: 2500 });
   }
 
   /** Types the path on the tab agent's prompt line without submitting it. */
@@ -470,7 +510,7 @@ export default class Filescout extends View {
     const target = candidates.find((p) => p.status) ?? candidates[0];
     closeOverlay(props().overlay);
     if (!target) {
-      notify({ title: "No agent pane in this tab", level: "warning" });
+      notify({ title: this.L("noAgent"), level: "warning" });
       return;
     }
     // There is no typed-text send in the command set: clipboard, focus, paste.
@@ -478,7 +518,7 @@ export default class Filescout extends View {
     cx.write_to_clipboard(text);
     run("pane.focus", { pane: target.pane });
     run("terminal.paste");
-    notify({ title: `Inserted ${what}`, body: text, level: "success", timeout: 2000 });
+    notify({ title: this.L("inserted", what), body: text, level: "success", timeout: 2000 });
   }
 
   choose(index, cx) {
@@ -532,22 +572,22 @@ export default class Filescout extends View {
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("filescout-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("File Scout"))
-        .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(`${count} files`)))
+        .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(this.L("files", count))))
         .when(this.stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${this.stat.added}`)))
         .when(this.stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${this.stat.removed}`)))
-        .when(Boolean(this.diff), el => el.child(div().id("filescout-split").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.split = !this.split; cx.notify(); }).child(this.split ? "合并" : "分栏")))
-        .when(this.isMd(), el => el.child(div().id("filescout-md-toggle").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.mdView = !this.mdView; cx.notify(); }).child(this.mdView ? "源码" : "预览")))
+        .when(Boolean(this.diff), el => el.child(div().id("filescout-split").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.split = !this.split; cx.notify(); }).child(this.L(this.split ? "merge" : "split"))))
+        .when(this.isMd(), el => el.child(div().id("filescout-md-toggle").px(6).h(18).rounded(5).cursor_pointer().text_size(11).text_color(t.dim).hover(s => s.bg(t.hover)).on_click((_e, cx) => { this.mdView = !this.mdView; cx.notify(); }).child(this.L(this.mdView ? "source" : "preview"))))
         .when(!this.overlay, el => el.child(div().id("filescout-max").w(18).cursor_pointer().text_color(t.muted).on_click(() => this.expand()).child(svg("mods/filescout/icons/maximize.svg").size(13))))
         .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
       .when(!this.file, el => el.child(v_flex().id("filescout-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
-        .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
+        .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? this.L("loadingFiles") : this.root ? this.L("noFiles") : this.L("noFolder")))))
+        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child(this.L("limited"))))))
       .when(Boolean(this.file), el => el.child(
         this.mdView && this.isMd() && this.text != null
           ? div().id("filescout-md").flex_1().min_h(0).overflow_hidden().p(14)
               .child(TextView.markdown(`filescout-md-${this.file}`, this.text).selectable(true).scrollable(true))
-          : this.diff ? (this.diffText ? this.diffView(t) : div().p(12).text_color(t.dim).child(this.fileError || "Loading diff…"))
-          : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+          : this.diff ? (this.diffText ? this.diffView(t) : div().p(12).text_color(t.dim).child(this.fileError || this.L("loadingDiff")))
+          : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || this.L("loadingFile"))));
   }
 }
