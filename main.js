@@ -17,7 +17,7 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
-// Zed 风格的修改标识：一个纯色圆点，目录把子项的状态汇总上来。
+// Zed 风格：按 git 状态给名字上色（文件和目录都算，目录取子树里最严重的那个）。
 const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
 const MARK_RANK = { M: 1, A: 2, D: 3, U: 4 };
 const markColor = (mark, t) => t[MARK_COLOR[mark]];
@@ -180,6 +180,7 @@ export default class Filescout extends View {
         }
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
         const marks = {};
+        let added = 0, removed = 0;
         if (top?.code === 0) {
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
           const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
@@ -192,9 +193,15 @@ export default class Filescout extends View {
               marks[full.slice(root.length)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
             }
           }
+          const numstat = await exec("git", ["--no-optional-locks", "diff", "HEAD", "--numstat"], { cwd, on }).catch(() => null);
+          if (numstat?.code === 0) for (const line of numstat.stdout.split("\n")) {
+            const [plus, minus] = line.split("\t");
+            if (/^\d+$/.test(plus)) added += Number(plus);
+            if (/^\d+$/.test(minus)) removed += Number(minus);
+          }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.dirty = rollup(marks); this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.dirty = rollup(marks); this.stat = { added, removed }; this.error = null; this.watch(cwd, cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
     });
@@ -265,8 +272,7 @@ export default class Filescout extends View {
         .on_mouse_down("right", (e, cx) => this.rowMenu(path, entry.dir, e, cx))
         .child(entry.dir ? svg(`mods/filescout/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(image(iconOf(entry.name, entry.dir)).size(14).flex_none())
-        .child(div().flex_1().min_w(0).truncate().child(entry.name))
-        .when(Boolean(mark), el => el.child(div().w(7).h(7).flex_none().rounded_full().bg(markColor(mark, t)))));
+        .child(div().flex_1().min_w(0).truncate().text_color(mark ? markColor(mark, t) : t.foreground).child(entry.name)));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
     return out;
@@ -378,11 +384,14 @@ export default class Filescout extends View {
   render(cx) {
     if (this.mode === "menu") return this.renderMenu(cx);
     if (key() !== this.context?.key) this.refresh(cx);
-    const t = theme();
+    const t = theme(), count = Object.keys(this.marks).length;
     return v_flex().id("filescout").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("filescout-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("File Scout"))
+        .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(`${count} files`)))
+        .when(this.stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${this.stat.added}`)))
+        .when(this.stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${this.stat.removed}`)))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
       .when(!this.file, el => el.child(v_flex().id("filescout-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
