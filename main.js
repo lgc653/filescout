@@ -17,6 +17,24 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
+// Zed 风格的修改标识：一个纯色圆点，目录把子项的状态汇总上来。
+const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
+const MARK_RANK = { M: 1, A: 2, D: 3, U: 4 };
+const markColor = (mark, t) => t[MARK_COLOR[mark]];
+/** Herdr 的 cwd 在 Windows 上用反斜杠，git 给的是正斜杠：统一成一把尺子再比。 */
+const slashed = (p) => (platform() === "windows" ? p.replace(/\\/g, "/") : p);
+
+/** 把文件状态卷到每一层父目录：<相对目录, 最严重状态>。 */
+function rollup(marks) {
+  const dirs = new Map();
+  for (const [rel, status] of Object.entries(marks)) {
+    for (let i = rel.lastIndexOf("/"); i > 0; i = rel.lastIndexOf("/", i - 1)) {
+      const dir = rel.slice(0, i), was = dirs.get(dir);
+      if (!was || MARK_RANK[status] > MARK_RANK[was]) dirs.set(dir, status);
+    }
+  }
+  return dirs;
+}
 
 const platform = () => window()?.platform ?? "linux";
 
@@ -110,6 +128,7 @@ export default class Filescout extends View {
     this.folders = new Set();
     this.pending = new Set();
     this.marks = {};
+    this.dirty = new Map();
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
   }
@@ -145,7 +164,7 @@ export default class Filescout extends View {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.dirty = new Map(); this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
     }
@@ -164,13 +183,18 @@ export default class Filescout extends View {
         if (top?.code === 0) {
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
           const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
-          if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-            const xy = entry.slice(0, 2);
-            marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+          if (status?.code === 0) {
+            // 键用相对面板目录的路径，省掉绝对路径的斜杠差异。
+            const base = slashed(top.stdout.trim()) + "/", root = slashed(cwd) + "/";
+            for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
+              const full = base + entry.slice(3), xy = entry.slice(0, 2);
+              if (!full.startsWith(root)) continue;
+              marks[full.slice(root.length)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+            }
           }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.dirty = rollup(marks); this.error = null; this.watch(cwd, cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
     });
@@ -233,14 +257,16 @@ export default class Filescout extends View {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path);
+      // 文件取自身状态，目录取子树里最严重的那个（Zed 会把状态卷到父目录）。
+      const mark = entry.dir ? this.dirty.get(path) : this.marks[path];
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .on_mouse_down("right", (e, cx) => this.rowMenu(path, entry.dir, e, cx))
         .child(entry.dir ? svg(`mods/filescout/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(image(iconOf(entry.name, entry.dir)).size(14).flex_none())
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
-        .when(Boolean(mark), el => el.child(div().text_size(11).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
+        .when(Boolean(mark), el => el.child(div().w(7).h(7).flex_none().rounded_full().bg(markColor(mark, t)))));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
     return out;

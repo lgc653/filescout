@@ -15,7 +15,8 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 
 ## 功能 / Features
 
-- 惰性文件树、文本预览、git 状态标记（与官方一致）
+- 惰性文件树、文本预览
+- git 状态圆点（Zed 风格）：修改=黄、新增=绿、删除=红、冲突=紫；父目录自动汇总子树里最严重的状态
 - 右键文件或目录：
   - **Open with default app** / **Open in file manager**
   - **Copy relative path**
