@@ -17,26 +17,60 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 
 - 惰性文件树、文本预览
 - git 状态染色（Zed 风格）：修改=黄、新增=绿、删除=红、冲突=紫；文件名和目录名都上色，目录取子树里最严重的状态
+- 标题栏显示 `N 个改动` 与 `+新增 / -删除` 行数
+- Markdown 渲染预览（`.md` / `.markdown`），标题栏可在「源码 / 预览」之间切换
+- 标题栏 ⤢ 把面板放大成浮窗，带上当前正在预览的文件
 - 右键文件或目录：
-  - **Open with default app** / **Open in file manager**
-  - **Copy relative path**
-  - **Copy absolute path**
-  - **Insert relative path into agent** —— 以 `@相对路径` 粘贴到当前标签页 agent 的输入行，不回车
-  - **Insert absolute path into agent**
-  - **View diff**（有变更的文件才有）—— 浮窗里看可视化 diff，单栏/分栏可切换
+  - **用默认程序打开** / **在文件管理器中打开**（Open with default app / Open in file manager）
+  - **复制相对路径**（Copy relative path）
+  - **复制绝对路径**（Copy absolute path）
+  - **把相对路径插入 agent** —— 以 `@相对路径` 粘贴到当前标签页 agent 的输入行，不回车
+  - **把绝对路径插入 agent**
+  - **查看 diff**（有变更的文件才有）—— 浮窗里看可视化 diff，单栏/分栏可切换
 - 菜单支持 ↑/↓、Enter、Esc
 - VSCode 风格的文件类型图标（Material Icon Theme，MIT）
 
 
 ## 语言 / Language
 
-界面文案默认中文。想让这个面板说英文，在布局里给它加 `props`：
+界面文案默认中文。英文在**布局**里给这个 mod 加 `props.lang`，不用改代码。
+
+### 示例：英文面板
+
+`~/.config/herdr-app/layouts/<你的布局>.json` 里，原来是这样：
 
 ```json
-"content": { "mod": "filescout", "props": { "lang": "en" } }
+{
+  "id": "files",
+  "type": "block",
+  "content": { "mod": "filescout" }
+}
 ```
 
-英文界面用同样的键：`lang: "en"`；不写或写别的值都按中文。
+加一行 `props` 就变成英文：
+
+```json
+{
+  "id": "files",
+  "type": "block",
+  "content": {
+    "mod": "filescout",
+    "props": { "lang": "en" }
+  }
+}
+```
+
+### 取值
+
+| `props.lang` | 界面 |
+| --- | --- |
+| 不写 | 中文（默认） |
+| `"zh"` | 中文 |
+| `"en"` | English |
+| 其他值 | 中文 |
+
+只影响这个面板自己的文案；放大浮窗、View diff 浮窗、右键菜单会继承当前语言，不会半中半英。
+改完保存布局即可，mod 会重新加载。
 
 ## 安装 / Install
 
