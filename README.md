@@ -20,6 +20,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 - 标题栏显示 `N 个改动` 与 `+新增 / -删除` 行数
 - Markdown 渲染预览（`.md` / `.markdown`），标题栏可在「源码 / 预览」之间切换
 - 标题栏 ⤢ 把面板放大成浮窗，带上当前正在预览的文件
+- 预览不出来（二进制、过大、读不了）时直接给一个**用默认程序打开**按钮，不用再回右键菜单
 - 右键文件或目录：
   - **用默认程序打开** / **在文件管理器中打开**（Open with default app / Open in file manager）
   - **复制相对路径**（Copy relative path）

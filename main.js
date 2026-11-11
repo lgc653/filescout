@@ -93,6 +93,9 @@ const FILE_ICON = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", ico: "image", svg: "svg",
   pdf: "pdf", zip: "zip", gz: "zip", tgz: "zip", tar: "zip", rar: "zip", "7z": "zip",
   lock: "lock", txt: "document", log: "document",
+  xlsx: "excel", xls: "excel", xlsm: "excel", csv: "excel",
+  docx: "word", doc: "word", rtf: "word", odt: "word",
+  pptx: "powerpoint", ppt: "powerpoint",
 };
 
 const NAME_ICON = {
@@ -103,7 +106,7 @@ const NAME_ICON = {
   makefile: "makefile", license: "license", "license.md": "license", "readme.md": "markdown",
 };
 
-/** The row's icon: a Material file icon by name, else by extension, else the plain file. */
+/** The row's icon: a Material file icon by name, else by extension, else null. */
 function iconOf(name, isDir) {
   if (isDir) return "mods/filescout/icons/folder-base.svg";
   const lower = name.toLowerCase();
@@ -112,7 +115,15 @@ function iconOf(name, isDir) {
   const dot = lower.lastIndexOf(".");
   const ext = dot >= 0 ? lower.slice(dot + 1) : lower;
   const icon = FILE_ICON[ext];
-  return icon ? `mods/filescout/icons/${icon}.svg` : "mods/filescout/file.svg";
+  return icon ? `mods/filescout/icons/${icon}.svg` : null;
+}
+
+/** 有专属图标的按原色画（Material 的配色在明暗主题下都够看）；没有的走掩码，颜色跟着主题前景色。 */
+function iconEl(name, isDir, t) {
+  const path = iconOf(name, isDir);
+  return path
+    ? image(path).size(14).flex_none()
+    : svg("mods/filescout/file.svg").size(14).flex_none().text_color(t.muted);
 }
 
 /** The path as the user would type it: backslashes on Windows. */
@@ -442,7 +453,7 @@ export default class Filescout extends View {
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .on_mouse_down("right", (e, cx) => this.rowMenu(path, entry.dir, e, cx))
         .child(entry.dir ? svg(`mods/filescout/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-        .child(image(iconOf(entry.name, entry.dir)).size(14).flex_none())
+        .child(iconEl(entry.name, entry.dir, t))
         .child(div().flex_1().min_w(0).truncate().text_color(mark ? markColor(mark, t) : t.foreground).child(entry.name)));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
@@ -482,19 +493,24 @@ export default class Filescout extends View {
     });
   }
 
-  async openTarget() {
-    const path = this.abs(), p = platform();
+  /** 用系统默认程序打开一个路径：右键菜单和预览失败时的按钮共用。 */
+  async openPath(path, on) {
+    const p = platform();
     const [cmd, args] =
       p === "windows" ? ["cmd", ["/c", "start", "", path]]
       : p === "macos" ? ["open", [path]]
       : ["xdg-open", [path]];
-    closeOverlay(props().overlay);
     try {
-      const r = await exec(cmd, args, { on: this.menu.on });
+      const r = await exec(cmd, args, { on });
       if (r.code !== 0) throw new Error(r.stderr || `exit ${r.code}`);
     } catch (e) {
       notify({ title: this.L("openErr", path), body: String(e), level: "error" });
     }
+  }
+
+  async openTarget() {
+    closeOverlay(props().overlay);
+    await this.openPath(this.abs(), this.menu.on);
   }
 
   copyPath(text, what, cx) {
@@ -562,6 +578,21 @@ export default class Filescout extends View {
       );
   }
 
+  /** 预览不出来时那一格里的「用默认程序打开」按钮。 */
+  openButton(t) {
+    return h_flex().id("filescout-open-app").h(26).px(10).gap(6).flex_none().rounded(6).items_center()
+      .bg(t.surface).border_1().border_color(t.border).cursor_pointer().hover(s => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openPath(absolute(this.root, this.file), this.on); })
+      .child(div().text_size(12).text_color(t.foreground).child(this.L("openApp")));
+  }
+
+  /** 预览区里没有内容可画时的样子：一句话，加一个能打开它的按钮。 */
+  fallback(t, text) {
+    return v_flex().p(12).gap(10).items_start().text_color(t.dim)
+      .child(text)
+      .when(Boolean(this.fileError), el => el.child(this.openButton(t)));
+  }
+
   // ---------- render ----------
 
   render(cx) {
@@ -587,7 +618,7 @@ export default class Filescout extends View {
         this.mdView && this.isMd() && this.text != null
           ? div().id("filescout-md").flex_1().min_h(0).overflow_hidden().p(14)
               .child(TextView.markdown(`filescout-md-${this.file}`, this.text).selectable(true).scrollable(true))
-          : this.diff ? (this.diffText ? this.diffView(t) : div().p(12).text_color(t.dim).child(this.fileError || this.L("loadingDiff")))
-          : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || this.L("loadingFile"))));
+          : this.diff ? (this.diffText ? this.diffView(t) : this.fallback(t, this.fileError || this.L("loadingDiff")))
+          : this.code ? Editor.new(this.code).flex_1().min_h(0) : this.fallback(t, this.fileError || this.L("loadingFile"))));
   }
 }
