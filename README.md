@@ -39,9 +39,9 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
   - **复制绝对路径**（Copy absolute path）
   - **把相对路径插入 agent** —— 以 `@相对路径` 粘贴到当前标签页 agent 的输入行，不回车
   - **把绝对路径插入 agent**
-  - **查看 diff**（有变更的文件才有）—— 浮窗里看可视化 diff，单栏/分栏可切换
+  - **查看 diff**（有变更的文件才有）—— 浮窗里看可视化 diff：单栏 / 分栏可切换，左边缘绿红变更条、行号栏带底色、**行内高亮**标出这一行里到底改了哪几个字（单栏），表头给这个文件的 `+n/-m`；超过面板宽的长行可切「换行」折行看全；大 diff 只画可见行，不再截断
 - 菜单支持 ↑/↓、Enter、Esc
-- VSCode 风格的文件类型图标（Material Icon Theme，MIT）
+- VSCode 风格的文件类型图标（Material Icon Theme，MIT；Office 三件套用 [vscode-icons](https://github.com/vscode-icons/vscode-icons) 的官方 Office 图标，MIT）
 
 
 ## 语言 / Language
@@ -128,4 +128,4 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 
 ## 来源 / Credits
 
-基于 Herdr 官方 `defaults/mods/files`（Apache-2.0）修改。图标来自 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)（MIT）。
+基于 Herdr 官方 `defaults/mods/files`（Apache-2.0）修改。图标来自 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)（MIT）；Word / Excel / PowerPoint 三个用的是 [vscode-icons](https://github.com/vscode-icons/vscode-icons)（MIT）里的微软 Office 官方图标（Office 标识归微软所有）。

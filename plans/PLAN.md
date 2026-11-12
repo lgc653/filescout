@@ -16,6 +16,7 @@
 | 浮窗 Esc 关闭 | 已做 |
 | F7 发送到 agent（带指令） | 不做（用户确认不需要） |
 | F8 新建文件 / 文件夹 / 重命名 | 不做（用户确认不需要） |
+| diff 可读性改造（VSCode 风格，见文末） | 已做 |
 
 
 ## 一、竞品对照
@@ -183,3 +184,42 @@
 - **性能**：现有每 10s 全量刷新 + watchFolder；新增的搜索/跟随要避免叠加 exec 风暴（搜索手动触发；跟随用目录 watch 而非全量）。
 - **写操作**：F8 涉及真实文件系统写入，需确认弹窗 + 失败提示（`notify({level:"error"})`）。
 - **验证**：改完按 `AGENTS.md` 的流程 —— 先改 `~/.config/herdr-app/mods/filescout/` 看效果，`herdr-app check`、`herdr-app status`，确认后再拷回仓库。
+
+---
+
+## 六、diff 可读性改造（已做，2026-11-12）
+
+**起因**：原来的 diff 浮窗（`diffView()`）行底色只有 15% 透明度且硬编码、没有行内高亮、没有变更标记条，和 VSCode / JetBrains 的 diff 比可读性差。
+
+### 做法：拆成「先算行数据，再渲染」
+
+`main.js` 顶部新增（模块级）：
+
+- `untab()` —— 制表符按 4 列对齐展开（Text 不画 tab）。
+- `changedSpan(a, b)` / `span3(line, other)` —— 一对增删行算公共前缀和公共后缀，中间那段就是「真正变了的部分」，切成 `pre / mid / suf`。
+- `diffRows(lines)` —— unified diff → 单栏行数组（`meta` / `hunk` / `ctx` / `del` / `add`）。丢掉 `diff --git`、`index`、`---`、`+++` 这些单文件场景的噪声行；`\\ No newline` 归到 meta。行数上限 `DIFF_CAP = 20000`。
+- `splitRows(rows)` —— 上面那份再折一次成分栏行数组（成对的 `-`/`+` 折成一行，配不上的对面是 `null` = 填充行）。
+
+`showDiff()`：`git diff` 补 `--no-color`（防 `color.diff=always`）和 `--unified=3`；未跟踪文件补一行 hunk 头再整份算新增；结果同时算出 `diffRows.{unified,split}` 和本文件的 `diffStat`。
+
+`diffView(t)` 只负责画：
+
+- 左边缘 3px 变更色条（`ansi2` 加 / `ansi1` 删），单栏分栏都有；分栏空位画 `t.surface` 填充。
+- 行号栏加 `bg(t.surface)` + 右侧 1px 分隔线，成为一个 gutter。
+- 两层底色：整行 `t.ansiX + "1f"`，行内变化段 `t.ansiX + "4d"`。都跟主题，明暗主题下都够看。
+- hunk 头单独一行：`t.raised` 底，`@@ … @@` 用 `ansi4`，尾部函数名 `muted`。
+- 表头在看 diff 时显示**这个文件**的 `+n/-m`（原来是整个仓库的总数）。
+- 工具栏多一个「换行」chip（`this.diffWrap`）：单栏下长行折行显示。**折行时不做行内高亮**（三段 span 没法跨行折），整行底色仍在。
+- 虚拟化：非换行 `v_virtual_list`（固定 18px），换行 `list()`（GPUI 自己量高度），配对 `Scrollbar.vertical(id)`。顺带把原来的 3000 行截断去掉。
+
+### 验证
+
+- `herdr-app check` 通过、`status` 的 `errors` 为 `[]`。
+- 解析层用 node 直接跑 `diffRows/splitRows`，核对行号、配对、`mid` 区间（例如 `removeTehThing` vs `addedTehThing` → mid 是 `remove` / `added`，共同后缀 `TehThing(a, b, c);` 不算变化）。
+- 在 mod 副本里临时塞一段样例 diff（`TEMP-DIFF-DEMO`）逐项 `herdr-app shot` 核对：单栏、分栏（含填充行）、换行、9000 行大 diff；截图确认后删掉临时代码。
+
+### 遗留 / 没做
+
+- 折叠未改动区域（「展开 N 行」）—— git 已只给 3 行上下文，收益小。
+- 换行模式的行内高亮（见上）。
+- 语法高亮 diff。

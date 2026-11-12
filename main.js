@@ -1,8 +1,8 @@
 // filescout — Herdr 的 Files 面板增强版。
 // 速度：Windows 本机列目录走 node（约 80ms），PowerShell 仅作兜底（约 1.4s）。
 // 菜单：默认应用打开、复制相对/绝对路径、把 @路径 插入 agent 的输入行。
-import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, TextView, Input, InputState } from "gpui-base";
+import { View, div, svg, image, list } from "gpui-kit";
+import { v_flex, h_flex, Editor, EditorState, TextView, Input, InputState, Scrollbar, v_virtual_list } from "gpui-base";
 import {
   spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome,
   props, openOverlay, closeOverlay, run, notify,
@@ -38,6 +38,84 @@ function rollup(marks) {
 
 const platform = () => window()?.platform ?? "linux";
 
+// ---------- diff：先把 unified diff 解析成行数据，渲染只负责画 ----------
+
+/** 显示用：把制表符按 4 列对齐展开（Text 不画 tab）。 */
+const untab = (text) => text.replace(/[^\t]*\t/g, s => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
+
+/** 一对增删行里真正变化的区间 = 公共前缀和公共后缀之外的那一段。 */
+function changedSpan(a, b) {
+  const max = Math.min(a.length, b.length);
+  let p = 0;
+  while (p < max && a[p] === b[p]) p++;
+  let suffix = 0;
+  while (suffix < max - p && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+  return { p, suffix };
+}
+
+/** 把一行切成「没变 / 变了 / 没变」三段，mid 就是行内高亮的那一段；没有对照就整行算没变。 */
+function span3(line, other) {
+  if (other == null) return { pre: line, mid: "", suf: "", text: line };
+  const { p, suffix } = changedSpan(line, other);
+  return { pre: line.slice(0, p), mid: line.slice(p, line.length - suffix), suf: suffix ? line.slice(line.length - suffix) : "", text: line };
+}
+
+// 单文件 diff 里 `diff --git` / `index` / `---` / `+++` 没有信息量，直接丢掉；
+// 其余 git 元信息（新文件、改名、模式变化…）留一行灰字。
+const DIFF_NOISE = /^(diff --git |index |--- |\+\+\+ )/;
+const DIFF_META = /^(new file|deleted file|old mode|new mode|similarity|rename |Binary )/;
+const DIFF_CAP = 20000;
+
+/** unified diff → 单栏用的行数组；分栏由 splitRows() 从这个结果再折一次。 */
+function diffRows(lines) {
+  const rows = [];
+  let oldNo = 0, newNo = 0, i = 0;
+  while (i < lines.length && rows.length < DIFF_CAP) {
+    const raw = lines[i];
+    if (raw.startsWith("@@")) {
+      const m = /^(@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@)(.*)$/.exec(raw);
+      if (m) { oldNo = Number(m[2]); newNo = Number(m[3]); }
+      rows.push({ kind: "hunk", header: m ? m[1] : raw, section: (m?.[4] ?? "").trim() });
+      i++; continue;
+    }
+    if (DIFF_NOISE.test(raw)) { i++; continue; }
+    if (DIFF_META.test(raw) || raw.startsWith("\\")) { rows.push({ kind: "meta", text: raw }); i++; continue; }
+    if (raw.startsWith("-") || raw.startsWith("+")) {
+      const dels = [], adds = [];
+      while (i < lines.length && lines[i][0] === "-" && !lines[i].startsWith("---")) dels.push(untab(lines[i++].slice(1)));
+      while (i < lines.length && lines[i][0] === "+" && !lines[i].startsWith("+++")) adds.push(untab(lines[i++].slice(1)));
+      // 一段删、一段增按序号配对：行内高亮要两边都看着才能算。
+      for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+        const d = dels[k], a = adds[k];
+        if (d != null) rows.push({ kind: "del", old: oldNo++, new: null, ...span3(d, a) });
+        if (a != null) rows.push({ kind: "add", old: null, new: newNo++, ...span3(a, d) });
+      }
+      continue;
+    }
+    if (raw.startsWith(" ")) { const text = untab(raw.slice(1)); rows.push({ kind: "ctx", old: oldNo++, new: newNo++, ...span3(text, null) }); i++; continue; }
+    i++;
+  }
+  return rows;
+}
+
+/** 单栏行数组 → 分栏行数组：一对 -/+ 折成一行，配不上的对面留空（画成填充行）。 */
+function splitRows(rows) {
+  const out = [], side = (r, sign) => ({ no: sign === "-" ? r.old : r.new, sign, pre: r.pre, mid: r.mid, suf: r.suf, text: r.text });
+  let i = 0;
+  while (i < rows.length) {
+    const r = rows[i];
+    if (r.kind === "ctx") { out.push({ kind: "row", left: side(r, " "), right: side(r, " ") }); i++; continue; }
+    if (r.kind !== "del" && r.kind !== "add") { out.push(r); i++; continue; }
+    const dels = [], adds = [];
+    while (i < rows.length && rows[i].kind === "del") dels.push(rows[i++]);
+    while (i < rows.length && rows[i].kind === "add") adds.push(rows[i++]);
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+      out.push({ kind: "row", left: dels[k] ? side(dels[k], "-") : null, right: adds[k] ? side(adds[k], "+") : null });
+    }
+  }
+  return out;
+}
+
 // 能当图片预览的扩展名。拷贝放在 appHome 下的 filescout-cache/，不能放 mod 目录里：
 // herdr 会盯着 mod 目录，往里写文件会触发 mod 重载，面板状态被重置（看起来像「闪一下回到列表」）。
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"]);
@@ -45,12 +123,12 @@ const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "s
 // 界面文案：布局里给这个 mod 的 props 加 {"lang":"en"} 切英文，默认中文。
 const I18N = {
   zh: {
-    files: n => `${n} 个改动`, split: "分栏", merge: "合并", preview: "预览", source: "源码",
+    files: n => `${n} 个改动`, split: "分栏", merge: "合并", wrap: "换行", nowrap: "不换行", preview: "预览", source: "源码",
     hideFiles: "隐藏", showFiles: "显示",
     onlyChanged: "只看改动", showAll: "显示全部",
     sortTip: "按名称排序，点击切换升序 / 降序", hideTip: "显示或隐藏以点开头的文件",
     onlyChangedTip: "只列出有 git 改动的文件和目录",
-    splitTip: "单栏 / 分栏看 diff", mdTip: "渲染后的预览 / 看源码",
+    splitTip: "单栏 / 分栏看 diff", wrapTip: "长行折行显示 / 恢复截断（只影响单栏）", mdTip: "渲染后的预览 / 看源码",
     search: "搜索文件名，回车搜全部", clearSearch: "清空搜索",
     searching: "正在搜索…", noResults: "没有匹配的文件",
     openFolder: "在文件管理器中打开", openApp: "用默认程序打开",
@@ -66,12 +144,12 @@ const I18N = {
     relPath: "相对路径", absPath: "绝对路径", noAgent: "当前标签页里没有 agent 面板",
   },
   en: {
-    files: n => `${n} files`, split: "Split", merge: "Unified", preview: "Preview", source: "Source",
+    files: n => `${n} files`, split: "Split", merge: "Unified", wrap: "Wrap", nowrap: "No wrap", preview: "Preview", source: "Source",
     hideFiles: "Hide", showFiles: "Show",
     onlyChanged: "Changed", showAll: "Show all",
     sortTip: "Sort by name — click to switch between A→Z and Z→A", hideTip: "Show or hide dot-files",
     onlyChangedTip: "List only files and folders with Git changes",
-    splitTip: "Unified or split diff view", mdTip: "Rendered preview or source",
+    splitTip: "Unified or split diff view", wrapTip: "Wrap long lines or clip them (unified only)", mdTip: "Rendered preview or source",
     search: "Search file names, Enter searches all", clearSearch: "Clear search",
     searching: "Searching…", noResults: "No matching files",
     openFolder: "Open in file manager", openApp: "Open with default app",
@@ -226,8 +304,11 @@ export default class Filescout extends View {
     this.search.on("submit", (_e, cx) => this.searchAll(cx));
     // Markdown 默认看渲染后的样子，可切回源码。
     this.mdView = true;
-    // diff 默认单栏（面板窄），可切分栏。
+    // diff 默认单栏（面板窄），可切分栏；长行默认截断，跟 VSCode 一致，可切换行。
     this.split = Boolean(p.wide);
+    this.diffWrap = false;
+    this.diffRows = null;
+    this.diffStat = null;
     // 从别的实例点"放大"打开时，带走当前正在预览的文件。
     this.overlay = p.overlay ?? null;
     this.openedFile = p.file ?? null;
@@ -357,6 +438,7 @@ export default class Filescout extends View {
 
   show(path, cx) {
     this.code?.release(); this.code = null; this.file = path; this.fileError = null; this.text = null; this.image = null; this.diff = false;
+    this.diffRows = null; this.diffStat = null;
     this.watchedFile = null;
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on;
@@ -437,93 +519,102 @@ export default class Filescout extends View {
     return r.stdout.trim();
   }
 
-  /** 把 unified diff 画成带底色和行号的表：合并（单栏）或分栏。 */
+  /** 画 diff：VSCode 风格 —— 左边缘变更色条、灰底 gutter 行号、两层底色（整行 + 行内变化段）。 */
   diffView(t) {
-    const mono = settings().font_family, rows = [], CAP = 3000;
-    const lines = this.diffText.split("\n");
+    const mono = settings().font_family;
+    const wrap = this.diffWrap && !this.split;
+    const rows = (this.diffRows && (this.split ? this.diffRows.split : this.diffRows.unified)) ?? [];
+    if (!rows.length) return this.fallback(t, this.fileError || this.L("noDiff"));
+    // 主题色的一层浅底（整行）+ 一层深底（行内变化的那几个字），和 IDE 一样分两层。
+    const tone = {
+      add: { bar: t.ansi2, bg: t.ansi2 + "1f", mid: t.ansi2 + "4d" },
+      del: { bar: t.ansi1, bg: t.ansi1 + "1f", mid: t.ansi1 + "4d" },
+    };
+    const bar = color => div().w(3).flex_none().self_stretch().when(Boolean(color), el => el.bg(color));
     const num = n => div().w(34).flex_none().text_right().pr(6).text_color(t.dim).child(n == null ? "" : String(n));
-    const sign = (s, color) => div().w(14).flex_none().text_color(color).child(s);
-    const line = (bg, children) => h_flex().w_full().h(18).flex_none().font_family(mono).text_size(11.5).items_center()
+    const sign = (s, color) => div().w(14).flex_none().text_center().text_color(color ?? t.dim).child(s);
+    // 折行时行高不定，行号跟着第一行文字走，不要竖着居中。
+    const gutter = cells => h_flex().flex_none().self_stretch().bg(t.surface).border_r(1).border_color(t.border)
+      .when(wrap, el => el.items_start().pt(2)).when(!wrap, el => el.items_center()).children(cells);
+    const rowEl = (bg, children) => h_flex().w_full().flex_none().font_family(mono).text_size(11.5)
+      .when(wrap, el => el.items_start().py(2)).when(!wrap, el => el.h(18).items_center())
       .when(Boolean(bg), el => el.bg(bg)).children(children);
-    const ADD = "#98c37926", DEL = "#e06c7526";
-    let oldNo = 0, newNo = 0, i = 0;
-    while (i < lines.length && rows.length < CAP) {
-      const raw = lines[i];
-      if (raw.startsWith("@@")) {
-        const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (m) { oldNo = Number(m[1]); newNo = Number(m[2]); }
-        rows.push(line(t.surface, [div().flex_1().px(8).truncate().text_color(t.ansi4).child(raw)]));
-        i++; continue;
-      }
-      if (/^(diff |index |--- |\+\+\+ |new file|deleted file|old mode|new mode|similarity|rename |Binary )/.test(raw)) {
-        rows.push(line(null, [div().flex_1().px(8).truncate().text_color(t.muted).child(raw)]));
-        i++; continue;
-      }
-      if (raw.startsWith("-")) {
-        const dels = [];
-        while (i < lines.length && lines[i].startsWith("-") && !lines[i].startsWith("---")) dels.push(lines[i++]);
-        const adds = [];
-        while (i < lines.length && lines[i].startsWith("+") && !lines[i].startsWith("+++")) adds.push(lines[i++]);
-        for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
-          const d = dels[k], add = adds[k];
-          if (this.split) rows.push(line(null, [
-            h_flex().flex_1().min_w(0).when(Boolean(d), el => el.bg(DEL)).children(d
-              ? [num(oldNo++), sign("-", t.ansi1), div().flex_1().min_w(0).truncate().child(d.slice(1))]
-              : [num(null), sign("", t.dim), div().flex_1()]),
-            div().w(1).flex_none().self_stretch().bg(t.border),
-            h_flex().flex_1().min_w(0).when(Boolean(add), el => el.bg(ADD)).children(add
-              ? [num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(add.slice(1))]
-              : [num(null), sign("", t.dim), div().flex_1()]),
-          ]));
-          else {
-            if (d) rows.push(line(DEL, [num(oldNo++), num(null), sign("-", t.ansi1), div().flex_1().min_w(0).truncate().child(d.slice(1))]));
-            if (add) rows.push(line(ADD, [num(null), num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(add.slice(1))]));
-          }
-        }
-        continue;
-      }
-      if (raw.startsWith("+")) {
-        while (i < lines.length && lines[i].startsWith("+") && !lines[i].startsWith("+++")) {
-          const text = lines[i++].slice(1);
-          if (this.split) rows.push(line(null, [
-            h_flex().flex_1().min_w(0).children([num(null), sign("", t.dim), div().flex_1()]),
-            div().w(1).flex_none().self_stretch().bg(t.border),
-            h_flex().flex_1().min_w(0).bg(ADD).children([num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(text)]),
-          ]));
-          else rows.push(line(ADD, [num(null), num(newNo++), sign("+", t.ansi2), div().flex_1().min_w(0).truncate().child(text)]));
-        }
-        continue;
-      }
-      if (raw.startsWith(" ")) {
-        const text = raw.slice(1);
-        if (this.split) rows.push(line(null, [
-          h_flex().flex_1().min_w(0).children([num(oldNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]),
-          div().w(1).flex_none().self_stretch().bg(t.border),
-          h_flex().flex_1().min_w(0).children([num(newNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]),
-        ]));
-        else rows.push(line(null, [num(oldNo++), num(newNo++), sign(" ", t.dim), div().flex_1().min_w(0).truncate().child(text)]));
-        i++; continue;
-      }
-      i++;
-    }
-    return v_flex().id("filescout-diff").flex_1().min_h(0).overflow_y_scrollbar().overflow_x_hidden().py(4).children(rows);
+    /** 正文：换行时整行折行；否则切成「没变 / 变了 / 没变」三段，中间那段加底色。 */
+    const body = (side, hl) => {
+      if (!side) return div().flex_1();
+      if (wrap) return div().flex_1().min_w(0).whitespace_normal().px(6).child(side.text);
+      return h_flex().flex_1().min_w(0).items_center().overflow_hidden()
+        .child(div().flex_none().whitespace_nowrap().pl(6).child(side.pre))
+        .when(Boolean(side.mid), el => el.child(div().flex_none().rounded(2).bg(hl).child(side.mid)))
+        .child(div().flex_1().min_w(0).truncate().child(side.suf));
+    };
+    /** 一栏里的四块：色条（占位也要有，不然左右错位）、行号、变号、正文。 */
+    const cell = (side, tn) => [
+      bar(side ? tn.bar : null),
+      gutter([num(side ? side.no : null)]),
+      sign(side ? side.sign : "", tn.bar),
+      body(side, tn.mid),
+    ];
+    /** 分栏里的一侧；side 为 null 就是「对面没有对应行」的填充位。 */
+    const pane = side => {
+      const tn = !side || side.sign === " " ? { bar: null, mid: null } : side.sign === "+" ? tone.add : tone.del;
+      const bg = !side ? t.surface : tn.bg ?? null;
+      return h_flex().flex_1().min_w(0).when(Boolean(bg), el => el.bg(bg)).children(cell(side, tn));
+    };
+
+    const view = r => {
+      if (r.kind === "hunk") return rowEl(t.raised, [
+        div().flex_none().pl(10).text_color(t.ansi4).child(r.header),
+        div().flex_1().min_w(0).truncate().pl(8).text_color(t.muted).child(r.section),
+      ]);
+      if (r.kind === "meta") return rowEl(null, [div().flex_1().min_w(0).truncate().pl(10).text_color(t.dim).child(r.text)]);
+      if (this.split) return rowEl(null, [pane(r.left), div().w(1).flex_none().self_stretch().bg(t.border), pane(r.right)]);
+      const tn = r.kind === "add" ? tone.add : r.kind === "del" ? tone.del : { bar: null, bg: null, mid: null };
+      return rowEl(tn.bg, [
+        bar(tn.bar),
+        gutter([num(r.old), num(r.new)]),
+        sign(r.kind === "add" ? "+" : r.kind === "del" ? "-" : " ", tn.bar),
+        body(r, tn.mid),
+      ]);
+    };
+
+    // 行数可能上万：只画看得见的那几十行。换行时行高不定，交给 GPUI 自己量。
+    const id = this.split ? "filescout-diff-split" : "filescout-diff-unified";
+    const rowKey = i => String(i);
+    return v_flex().id("filescout-diff").flex_1().min_h(0).relative().overflow_hidden()
+      .child(wrap
+        ? list(id, rows.length, rowKey, i => view(rows[i]))
+        : div().size_full().child(v_virtual_list(id, rows.length, 18, rowKey, range => rows.slice(range.start, range.end).map(view)).size_full()))
+      .child(wrap ? Scrollbar.vertical(id).absolute().inset_0() : Scrollbar.vertical(id).viewport_from_layout().absolute().inset_0());
   }
 
   /** 在同一个预览区显示这个文件的改动：git diff HEAD，未跟踪的文件整份算新增。 */
   showDiff(path, cx) {
     this.code?.release(); this.code = null; this.file = path; this.text = null; this.diffText = null; this.fileError = null; this.diff = true; this.mdView = false;
+    this.diffRows = null; this.diffStat = null;
     const context = this.context, root = this.root, on = this.on;
     cx.spawn(async cx => {
       try {
-        const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "HEAD", "--", path], { cwd: root, on }).catch(() => null);
+        // --no-color：用户 gitconfig 里若写了 color.diff=always，ANSI 码会混进解析器。
+        const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "HEAD", "--no-color", "--unified=3", "--", path], { cwd: root, on }).catch(() => null);
         let text = r?.code === 0 ? r.stdout : "";
         if (!text) {
           const body = await readTextFile(`${root}/${path}`, { on });
-          text = body == null ? "" : body.split("\n").map(line => `+${line}`).join("\n");
+          if (body != null) {
+            const body2 = body.replace(/\n$/, "").split("\n");
+            text = [`@@ -0,0 +1,${body2.length} @@`, ...body2.map(line => `+${line}`)].join("\n");
+          }
         }
         if (!this.current(context) || this.file !== path) return;
         if (!text) { this.fileError = this.L("noDiff"); return; }
         this.diffText = text;
+        const all = text.split("\n");
+        const unified = diffRows(all);
+        this.diffRows = { unified, split: splitRows(unified) };
+        this.diffStat = {
+          added: all.filter(l => l[0] === "+" && !l.startsWith("+++")).length,
+          removed: all.filter(l => l[0] === "-" && !l.startsWith("---")).length,
+        };
       } catch { if (this.current(context) && this.file === path) this.fileError = this.L("diffErr"); }
       finally { cx.notify(); }
     });
@@ -633,6 +724,7 @@ export default class Filescout extends View {
     const out = [];
     if (this.file) {
       if (this.diff) out.push(this.chip("filescout-split", this.L(this.split ? "merge" : "split"), this.L("splitTip")).on_click((_e, cx) => { this.split = !this.split; cx.notify(); }));
+      if (this.diff) out.push(this.chip("filescout-wrap", this.L(this.diffWrap ? "nowrap" : "wrap"), this.L("wrapTip")).on_click((_e, cx) => { this.diffWrap = !this.diffWrap; cx.notify(); }));
       if (this.isMd()) out.push(this.chip("filescout-md-toggle", this.L(this.mdView ? "source" : "preview"), this.L("mdTip")).on_click((_e, cx) => { this.mdView = !this.mdView; cx.notify(); }));
       return out;
     }
@@ -973,14 +1065,16 @@ export default class Filescout extends View {
     if (this.ctxKey() !== this.context?.key) this.refresh(cx);
     const t = theme(), count = Object.keys(this.marks).length;
     const tools = this.tools(t, count);
+    // 看 diff 时表头给的是这个文件的行数，比整个仓库的总数有用。
+    const stat = this.diff ? this.diffStat : this.stat;
     return v_flex().id("filescout").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .when(Boolean(this.overlay), el => el.track_focus(this.handle).on_key_down(e => { if (e.key === "escape") closeOverlay(this.overlay); }))
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("filescout-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("File Scout"))
         .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(this.L("files", count))))
-        .when(this.stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${this.stat.added}`)))
-        .when(this.stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${this.stat.removed}`)))
+        .when(stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${stat.added}`)))
+        .when(stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${stat.removed}`)))
         .when(!this.overlay, el => el.child(div().id("filescout-max").w(18).cursor_pointer().text_color(t.muted).on_click(() => this.expand()).child(svg("mods/filescout/icons/maximize.svg").size(13))))
         .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(this.crumbs(t)))
