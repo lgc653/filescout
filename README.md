@@ -108,7 +108,7 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 | macOS / Linux / 远程列目录 | `sh -c "…"` |
 | git 标记 | `git rev-parse --show-toplevel`、`git status --porcelain=v1 -z` |
 | 全量搜索（回车） | `git ls-files --cached --others --exclude-standard`；没有 git 时 `node` 递归（跳过 `node_modules`、`.git`） |
-| 图片预览 | `node -e "…copyFileSync…"`，把图片拷进 `mods/filescout/cache/`（`image()` 只能读 mod 目录内） |
+| 图片预览 | `node -e "…copyFileSync…"`，把图片拷进 `<appHome>/filescout-cache/`（`image()` 只能读应用目录内的文件；不能放进 mod 目录，否则 herdr 会当成改文件而重载 mod） |
 | 探测编辑器 | `where <bin>`（Windows）/ `which <bin>`，各平台一次 |
 | 打开文件/目录 | Windows `cmd /c start`，macOS `open`，Linux `xdg-open` |
 | 在文件管理器中定位 | Windows `explorer /select,<path>`，macOS `open -R`，Linux `xdg-open <dir>` |
@@ -123,6 +123,7 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 - 绝对路径在 Windows 上是 `@E:\...`，部分 CLI 不把它当文件引用，相对路径更稳
 - 工具栏搜索框的即时过滤只看**已加载**的目录；要看没展开过的文件，按回车做全量搜索（最多显示 200 条）
 - 图片预览与「预览跟随磁盘」只在本机做，且需要 `node`；远程 space 上退回「二进制文件」提示
+- 图片按原尺寸显示（超过面板时缩放），不放大；拷贝在 `<appHome>/filescout-cache/`，按源路径 + mtime + 大小命名，会一直留着
 - 「在文件管理器中定位」「用编辑器打开」只在本机出现，远程 space 上没有本机的文件管理器和编辑器
 
 ## 来源 / Credits

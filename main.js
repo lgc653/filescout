@@ -38,9 +38,9 @@ function rollup(marks) {
 
 const platform = () => window()?.platform ?? "linux";
 
-// 能当图片预览的扩展名；hashPath 只是给 cache 里那份拷贝起个稳定的名字。
+// 能当图片预览的扩展名。拷贝放在 appHome 下的 filescout-cache/，不能放 mod 目录里：
+// herdr 会盯着 mod 目录，往里写文件会触发 mod 重载，面板状态被重置（看起来像「闪一下回到列表」）。
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"]);
-const hashPath = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0; return h.toString(36); };
 
 // 界面文案：布局里给这个 mod 的 props 加 {"lang":"en"} 切英文，默认中文。
 const I18N = {
@@ -364,9 +364,9 @@ export default class Filescout extends View {
     if (IMAGE_EXT.has(ext)) {
       cx.spawn(async cx => {
         try {
-          const key = await this.cacheImage(`${root}/${path}`, ext, on);
+          const key = await this.cacheImage(`${root}/${path}`);
           if (this.file !== path || !this.current(context)) return;
-          this.image = `mods/filescout/cache/${key}`;
+          this.image = `filescout-cache/${key}`;
         } catch { if (this.file === path && this.current(context)) this.fileError = this.L("previewErr"); }
         finally { cx.notify(); }
       });
@@ -427,14 +427,14 @@ export default class Filescout extends View {
     } catch { /* 读不到就先不动 */ }
   }
 
-  /** 把图片拷进 mod 自己的 cache 目录：image() 只能读 mod 目录里的文件。 */
-  async cacheImage(src, ext, on) {
-    const key = `${hashPath(src)}.${ext}`;
-    const dst = `${appHome()}/mods/filescout/cache/${key}`.replace(/\\/g, "/");
-    const script = "const fs=require('fs');fs.mkdirSync(require('path').dirname(process.argv[2]),{recursive:true});fs.copyFileSync(process.argv[1],process.argv[2])";
-    const r = await exec("node", ["-e", script, src, dst], { on });
+  /** 把图片拷进 appHome/filescout-cache/：image() 只能读应用目录里的文件，
+   *  名字里带上 mtime 和大小，同一个文件只拷一次，改了就换一份新的。 */
+  async cacheImage(src) {
+    const dir = `${appHome()}/filescout-cache`.replace(/\\/g, "/");
+    const script = "const fs=require('fs'),path=require('path'),crypto=require('crypto');const src=process.argv[1],dir=process.argv[2];const st=fs.statSync(src);const key=crypto.createHash('sha1').update(src+':'+st.mtimeMs+':'+st.size).digest('hex').slice(0,16)+path.extname(src);const dst=path.join(dir,key);fs.mkdirSync(dir,{recursive:true});if(!fs.existsSync(dst))fs.copyFileSync(src,dst);process.stdout.write(key)";
+    const r = await exec("node", ["-e", script, src, dir], { on: this.on });
     if (r.code !== 0) throw new Error(r.stderr || "copy failed");
-    return key;
+    return r.stdout.trim();
   }
 
   /** 把 unified diff 画成带底色和行号的表：合并（单栏）或分栏。 */
