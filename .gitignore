@@ -1,3 +1,5 @@
 # Written by herdr-app when it loads a mod
 gpui-kit.d.ts
 jsconfig.json
+# 图片预览的临时拷贝
+cache/
