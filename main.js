@@ -36,6 +36,12 @@ function rollup(marks) {
   return dirs;
 }
 
+/** .gitignore 命中的条目：集合里存去掉尾斜杠的仓库相对路径，自身或落在某个被忽略目录下都算。 */
+const underIgnored = (set, rel) => {
+  for (const ig of set) if (rel === ig || rel.startsWith(ig + "/")) return true;
+  return false;
+};
+
 const platform = () => window()?.platform ?? "linux";
 
 // ---------- diff：先把 unified diff 解析成行数据，渲染只负责画 ----------
@@ -329,6 +335,7 @@ export default class Filescout extends View {
     this.pending = new Set();
     this.marks = {};
     this.dirty = new Map();
+    this.ignored = new Set();
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
   }
@@ -369,7 +376,7 @@ export default class Filescout extends View {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.dirty = new Map(); this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.dirty = new Map(); this.ignored = new Set(); this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
       if (this.openedFile) { this.show(this.openedFile, cx); this.openedFile = null; }
@@ -386,19 +393,25 @@ export default class Filescout extends View {
           await this.loadFolder(path, context);
         }
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
-        const marks = {};
+        const marks = {}, ignored = new Set();
         let added = 0, removed = 0;
         if (top?.code === 0) {
+          // 键用相对面板目录的路径，省掉绝对路径的斜杠差异。
+          const base = slashed(top.stdout.trim()) + "/", root = slashed(cwd) + "/";
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
           const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
           if (status?.code === 0) {
-            // 键用相对面板目录的路径，省掉绝对路径的斜杠差异。
-            const base = slashed(top.stdout.trim()) + "/", root = slashed(cwd) + "/";
             for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
               const full = base + entry.slice(3), xy = entry.slice(0, 2);
               if (!full.startsWith(root)) continue;
               marks[full.slice(root.length)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
             }
+          }
+          // .gitignore 命中的条目 git status 不报，单独列一份：渲染时压暗，对齐 Zed 的 Ignored 色。
+          const ls = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd, on }).catch(() => null);
+          if (ls?.code === 0) for (const p of ls.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
+            const full = base + p.replace(/\/$/, "");
+            if (full.startsWith(root)) ignored.add(full.slice(root.length));
           }
           const numstat = await exec("git", ["--no-optional-locks", "diff", "HEAD", "--numstat"], { cwd, on }).catch(() => null);
           if (numstat?.code === 0) for (const line of numstat.stdout.split("\n")) {
@@ -408,7 +421,7 @@ export default class Filescout extends View {
           }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.dirty = rollup(marks); this.stat = { added, removed }; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.dirty = rollup(marks); this.ignored = ignored; this.stat = { added, removed }; this.error = null; this.watch(cwd, cx);
         if (this.onlyChanged) this.ensureChangedFolders(cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
@@ -656,8 +669,10 @@ export default class Filescout extends View {
       if (out.length >= TOTAL) break;
       if (!this.showHidden && entry.name.startsWith(".")) continue;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path);
-      // 文件取自身状态，目录取子树里最严重的那个（Zed 会把状态卷到父目录）。
+      // 文件取自身状态，目录取子树里最严重的那个（Zed 会把状态卷到父目录）；
+      // 被 gitignore 的压暗（真实改动优先，所以放在 mark 之后）。
       const mark = entry.dir ? this.dirty.get(path) : this.marks[path];
+      const nameColor = mark ? markColor(mark, t) : underIgnored(this.ignored, path) ? t.dim : t.foreground;
       if (this.onlyChanged && !mark) continue;
       if (this.matchCache && !(entry.dir ? this.matchCache.dirs.has(path) : this.matchCache.files.has(path))) continue;
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover)).tooltip(absolute(this.root ?? "", path))
@@ -665,7 +680,7 @@ export default class Filescout extends View {
         .on_mouse_down("right", (e, cx) => this.rowMenu(path, entry.dir, e, cx))
         .child(entry.dir ? svg(`mods/filescout/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(iconEl(entry.name, entry.dir, t))
-        .child(div().flex_1().min_w(0).truncate().text_color(mark ? markColor(mark, t) : t.foreground).child(entry.name)));
+        .child(div().flex_1().min_w(0).truncate().text_color(nameColor).child(entry.name)));
       if (entry.dir && (open || this.onlyChanged || this.matchCache)) this.rows(path, depth + 1, out, t);
     }
     return out;

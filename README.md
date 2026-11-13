@@ -16,7 +16,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 ## 功能 / Features
 
 - 惰性文件树、文本预览
-- git 状态染色（Zed 风格）：修改=黄、新增=绿、删除=红、冲突=紫；文件名和目录名都上色，目录取子树里最严重的状态
+- git 状态染色（Zed 风格）：修改=黄、新增=绿、删除=红、冲突=紫；文件名和目录名都上色，目录取子树里最严重的状态；被 `.gitignore` 忽略的压成暗灰（真实改动优先）
 - 标题栏显示 `N 个改动` 与 `+新增 / -删除` 行数
 - 标题栏下一条**工具栏**（视图开关都在这里，标题不再挤）：
   - **搜索框**：输入即时过滤已加载的目录树；回车在整个目录里搜（git 仓库走 `git ls-files`，否则 `node` 递归），结果显示成「文件名 + 所在目录」两行
@@ -107,6 +107,7 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 | Windows 列目录 | `node -e "…readdirSync…"`；失败时 `powershell -NoProfile -Command Get-ChildItem` |
 | macOS / Linux / 远程列目录 | `sh -c "…"` |
 | git 标记 | `git rev-parse --show-toplevel`、`git status --porcelain=v1 -z` |
+| 被忽略的文件 | `git ls-files --others --ignored --exclude-standard --directory`，命中项的名字压成暗灰（`--directory` 让整棵被忽略的目录只出一个条目） |
 | 全量搜索（回车） | `git ls-files --cached --others --exclude-standard`；没有 git 时 `node` 递归（跳过 `node_modules`、`.git`） |
 | 图片预览 | `node -e "…copyFileSync…"`，把图片拷进 `<appHome>/filescout-cache/`（`image()` 只能读应用目录内的文件；不能放进 mod 目录，否则 herdr 会当成改文件而重载 mod） |
 | 探测编辑器 | `where <bin>`（Windows）/ `which <bin>`，各平台一次 |
