@@ -87,9 +87,18 @@ function diffRows(lines) {
     if (DIFF_NOISE.test(raw)) { i++; continue; }
     if (DIFF_META.test(raw) || raw.startsWith("\\")) { rows.push({ kind: "meta", text: raw }); i++; continue; }
     if (raw.startsWith("-") || raw.startsWith("+")) {
-      const dels = [], adds = [];
-      while (i < lines.length && lines[i][0] === "-" && !lines[i].startsWith("---")) dels.push(untab(lines[i++].slice(1)));
-      while (i < lines.length && lines[i][0] === "+" && !lines[i].startsWith("+++")) adds.push(untab(lines[i++].slice(1)));
+      const start = i, dels = [], adds = [];
+      while (i < lines.length && lines[i][0] === "-" && lines[i] !== "---") dels.push(untab(lines[i++].slice(1)));
+      while (i < lines.length && lines[i][0] === "+" && lines[i] !== "+++") adds.push(untab(lines[i++].slice(1)));
+      // 内容正好是 "--" / "++" 的增删行，在 diff 里长得和文件头（--- / +++）一模一样：
+      // 上面两行一个字都没吃掉时就自己当增删行走，否则 i 原地打转，宿主会打断脚本。
+      if (i === start) {
+        const text = untab(raw.slice(1));
+        rows.push(raw[0] === "-"
+          ? { kind: "del", old: oldNo++, new: null, ...span3(text, null) }
+          : { kind: "add", old: null, new: newNo++, ...span3(text, null) });
+        i++;
+      }
       // 一段删、一段增按序号配对：行内高亮要两边都看着才能算。
       for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
         const d = dels[k], a = adds[k];
@@ -512,6 +521,19 @@ export default class Filescout extends View {
   async reloadFile(cx) {
     const path = this.file, context = this.context;
     if (!path) return;
+    // 看 diff 时重算 diff；看文本时重读文件。
+    if (this.diff) {
+      try {
+        const text = await this.diffTextFor(path, context);
+        if (this.file !== path || this.context !== context || !this.diff) return;
+        if (!text) {
+          if (this.diffText) { this.diffText = null; this.diffRows = null; }
+          this.fileError = this.L("noDiff"); cx.notify(); return;
+        }
+        if (text !== this.diffText) { this.setDiff(text); cx.notify(); }
+      } catch { /* 读不到就先不动 */ }
+      return;
+    }
     try {
       const text = await readTextFile(`${this.root}/${path}`, { on: this.on });
       if (this.file !== path || this.context !== context) return;
@@ -601,33 +623,44 @@ export default class Filescout extends View {
       .child(wrap ? Scrollbar.vertical(id).absolute().inset_0() : Scrollbar.vertical(id).viewport_from_layout().absolute().inset_0());
   }
 
+  /** git diff HEAD 的原始文本；未跟踪的文件整份按新增造一份。 */
+  async diffTextFor(path, context) {
+    const { cwd: root, on } = context;
+    // --no-color：用户 gitconfig 里若写了 color.diff=always，ANSI 码会混进解析器。
+    const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "HEAD", "--no-color", "--unified=3", "--", path], { cwd: root, on }).catch(() => null);
+    const text = r?.code === 0 ? r.stdout : "";
+    if (text) return text;
+    const body = await readTextFile(`${root}/${path}`, { on });
+    if (body == null) return "";
+    const lines = body.replace(/\n$/, "").split("\n");
+    return [`@@ -0,0 +1,${lines.length} @@`, ...lines.map(line => `+${line}`)].join("\n");
+  }
+
+  /** 解析结果一次写完：渲染看到 diffText 时 rows 一定在，画不出半截。 */
+  setDiff(text) {
+    const all = text.split("\n"), unified = diffRows(all);
+    this.diffRows = { unified, split: splitRows(unified) };
+    this.diffStat = {
+      added: all.filter(l => l[0] === "+" && !l.startsWith("+++")).length,
+      removed: all.filter(l => l[0] === "-" && !l.startsWith("---")).length,
+    };
+    this.diffText = text;
+    this.fileError = null;
+  }
+
   /** 在同一个预览区显示这个文件的改动：git diff HEAD，未跟踪的文件整份算新增。 */
   showDiff(path, cx) {
     this.code?.release(); this.code = null; this.file = path; this.text = null; this.diffText = null; this.fileError = null; this.diff = true; this.mdView = false;
     this.diffRows = null; this.diffStat = null;
-    const context = this.context, root = this.root, on = this.on;
+    const context = this.context;
     cx.spawn(async cx => {
       try {
-        // --no-color：用户 gitconfig 里若写了 color.diff=always，ANSI 码会混进解析器。
-        const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "HEAD", "--no-color", "--unified=3", "--", path], { cwd: root, on }).catch(() => null);
-        let text = r?.code === 0 ? r.stdout : "";
-        if (!text) {
-          const body = await readTextFile(`${root}/${path}`, { on });
-          if (body != null) {
-            const body2 = body.replace(/\n$/, "").split("\n");
-            text = [`@@ -0,0 +1,${body2.length} @@`, ...body2.map(line => `+${line}`)].join("\n");
-          }
-        }
+        const text = await this.diffTextFor(path, context);
         if (!this.current(context) || this.file !== path) return;
         if (!text) { this.fileError = this.L("noDiff"); return; }
-        this.diffText = text;
-        const all = text.split("\n");
-        const unified = diffRows(all);
-        this.diffRows = { unified, split: splitRows(unified) };
-        this.diffStat = {
-          added: all.filter(l => l[0] === "+" && !l.startsWith("+++")).length,
-          removed: all.filter(l => l[0] === "-" && !l.startsWith("---")).length,
-        };
+        this.setDiff(text);
+        // 文件被改了就重算，和预览文本一条路。
+        this.watchFile(cx);
       } catch { if (this.current(context) && this.file === path) this.fileError = this.L("diffErr"); }
       finally { cx.notify(); }
     });
