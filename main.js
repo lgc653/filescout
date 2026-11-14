@@ -1109,6 +1109,13 @@ export default class Filescout extends View {
   // ---------- render ----------
 
   render(cx) {
+    // 渲染里抛出的异常会变成窗口顶上那条 "This view could not be re-rendered" 红条，
+    // 并且一直挂在面板上；自己接住，改成在面板里画一句提示，下一次重绘就能恢复。
+    try { return this.paint(cx); }
+    catch (e) { return v_flex().size_full().p(12).gap(6).bg(theme().background).text_color(theme().foreground).child("渲染出错（面板没画完）").child(String(e && e.message || e)); }
+  }
+
+  paint(cx) {
     if (this.mode === "menu") return this.renderMenu(cx);
     if (this.ctxKey() !== this.context?.key) this.refresh(cx);
     const t = theme(), count = Object.keys(this.marks).length;
