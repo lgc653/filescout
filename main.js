@@ -21,6 +21,9 @@ const PER_FOLDER = 500, TOTAL = 5000;
 const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
 const MARK_RANK = { M: 1, A: 2, D: 3, U: 4 };
 const markColor = (mark, t) => t[MARK_COLOR[mark]];
+/** 平台不会中途变：第一次问宿主就记下来，渲染上万行时省掉上万次 window() 调用。 */
+let _platform = null;
+const platform = () => (_platform ??= window()?.platform ?? "linux");
 /** Herdr 的 cwd 在 Windows 上用反斜杠，git 给的是正斜杠：统一成一把尺子再比。 */
 const slashed = (p) => (platform() === "windows" ? p.replace(/\\/g, "/") : p);
 
@@ -42,12 +45,11 @@ const underIgnored = (set, rel) => {
   return false;
 };
 
-const platform = () => window()?.platform ?? "linux";
-
 // ---------- diff：先把 unified diff 解析成行数据，渲染只负责画 ----------
-
 /** 显示用：把制表符按 4 列对齐展开（Text 不画 tab）。 */
-const untab = (text) => text.replace(/[^\t]*\t/g, s => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
+const untab = (text) => text.includes("\t")
+  ? text.replace(/[^\t]*\t/g, s => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4))
+  : text;
 
 /** 一对增删行里真正变化的区间 = 公共前缀和公共后缀之外的那一段。 */
 function changedSpan(a, b) {
@@ -151,7 +153,7 @@ const I18N = {
     copyRel: "复制相对路径", copyAbs: "复制绝对路径",
     insertRel: "把相对路径插入 agent", insertAbs: "把绝对路径插入 agent",
     diff: "查看 diff",
-    noFiles: "没有文件", noFolder: "没有目录", loadingFiles: "正在读取…", loadingFile: "正在读取文件…", loadingDiff: "正在读取 diff…",
+    noFiles: "没有文件", noFolder: "没有目录", listErr: "读不到这个目录", loadingFiles: "正在读取…", loadingFile: "正在读取文件…", loadingDiff: "正在读取 diff…",
     limited: "每个目录最多 500 项，总计 5000 项",
     gone: "这个文件已经不在了", binary: "二进制文件，不预览", previewErr: "无法预览（二进制、过大或读不了）",
     noDiff: "没有可显示的改动", diffErr: "读不到 diff",
@@ -172,7 +174,7 @@ const I18N = {
     copyRel: "Copy relative path", copyAbs: "Copy absolute path",
     insertRel: "Insert relative path into agent", insertAbs: "Insert absolute path into agent",
     diff: "View diff",
-    noFiles: "No files", noFolder: "No folder", loadingFiles: "Loading files…", loadingFile: "Loading file…", loadingDiff: "Loading diff…",
+    noFiles: "No files", noFolder: "No folder", listErr: "Cannot read this folder", loadingFiles: "Loading files…", loadingFile: "Loading file…", loadingDiff: "Loading diff…",
     limited: "File list limited to 500 entries per folder and 5,000 total",
     gone: "This file is no longer available", binary: "Binary file · no text preview", previewErr: "Cannot preview this file (binary, too large, or unreadable)",
     noDiff: "No changes to show", diffErr: "Cannot read the diff",
@@ -182,14 +184,18 @@ const I18N = {
 };
 const msg = (lang, key, ...args) => {
   const value = (I18N[lang] ?? I18N.zh)[key] ?? I18N.zh[key];
+  if (value == null) return key;
   return typeof value === "function" ? value(...args) : value;
 };
 
 
 // 放大/看 diff 的浮窗：不传 key，每次都由宿主居中打开；开新的先关旧的。
+// 槽里存的 id 可能已经被用户按 Esc 关掉了，closeOverlay 一个过期 id 不能挡住后面的 openOverlay。
 const opened = { big: null, diff: null };
 const reopen = (slot, spec) => {
-  if (opened[slot]) closeOverlay(opened[slot]);
+  const old = opened[slot];
+  opened[slot] = null;
+  if (old) { try { closeOverlay(old); } catch { /* 早就关了 */ } }
   opened[slot] = openOverlay(spec);
 };
 
@@ -315,6 +321,7 @@ export default class Filescout extends View {
     this.filter = "";
     this.results = null;
     this.search = InputState.new({ placeholder: this.L("search") });
+    this.searchSeq = 0;
     this.search.on("change", (_e, cx) => { this.filter = this.search.value(); this.results = null; cx.notify(); });
     this.search.on("submit", (_e, cx) => this.searchAll(cx));
     // Markdown 默认看渲染后的样子，可切回源码。
@@ -650,7 +657,7 @@ export default class Filescout extends View {
 
   /** 在同一个预览区显示这个文件的改动：git diff HEAD，未跟踪的文件整份算新增。 */
   showDiff(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.text = null; this.diffText = null; this.fileError = null; this.diff = true; this.mdView = false;
+    this.code?.release(); this.code = null; this.file = path; this.text = null; this.image = null; this.diffText = null; this.fileError = null; this.diff = true; this.mdView = false;
     this.diffRows = null; this.diffStat = null;
     const context = this.context;
     cx.spawn(async cx => {
@@ -812,6 +819,8 @@ export default class Filescout extends View {
   }
 
   clearSearch(cx) {
+    this.searchSeq++;
+    this.searching = false;
     this.search.set_value("");
     this.filter = "";
     this.results = null;
@@ -821,14 +830,17 @@ export default class Filescout extends View {
   /** 回车：搜整个目录（git 仓库走 ls-files，否则 node 递归）。 */
   async searchAll(cx) {
     if (!this.filterTerms().length) return;
-    const terms = this.filterTerms(), context = this.context, root = this.root, on = this.on;
+    const terms = this.filterTerms(), query = this.filter, seq = ++this.searchSeq;
+    const context = this.context, root = this.root, on = this.on;
     this.results = null; this.searching = true; this.error = null; cx.notify();
     let paths;
     try {
       const git = await exec("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root, on }).catch(() => null);
       paths = git?.code === 0 ? git.stdout.split("\n").filter(Boolean) : await this.walkFiles(root, on);
     } catch (e) { if (this.current(context)) this.error = String(e); paths = []; }
-    if (!this.current(context)) return;
+    // 搜到一半用户清了搜索框、改了词或返回了树：这次的结果已经没人要，丢掉。
+    if (seq !== this.searchSeq || !this.current(context)) return;
+    if (this.filter !== query) { this.searching = false; cx.notify(); return; }
     const hits = [];
     for (const path of paths) {
       const low = path.toLowerCase();
