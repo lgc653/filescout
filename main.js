@@ -723,18 +723,57 @@ export default class Filescout extends View {
       // 文件取自身状态，目录取子树里最严重的那个（Zed 会把状态卷到父目录）；
       // 被 gitignore 的压暗（真实改动优先，所以放在 mark 之后）。
       const mark = entry.dir ? this.dirty.get(path) : this.marks[path];
-      const nameColor = mark ? markColor(mark, t) : underIgnored(this.ignored, path) ? t.dim : t.foreground;
       if (this.onlyChanged && !mark) continue;
       if (this.matchCache && !(entry.dir ? this.matchCache.dirs.has(path) : this.matchCache.files.has(path))) continue;
-      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover)).tooltip(absolute(this.root ?? "", path))
-        .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
-        .on_mouse_down("right", (e, cx) => this.rowMenu(path, entry.dir, e, cx))
-        .child(entry.dir ? svg(`mods/filescout/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-        .child(iconEl(entry.name, entry.dir, t))
-        .child(div().flex_1().min_w(0).truncate().text_color(nameColor).child(entry.name)));
+      out.push({ path, name: entry.name, dir: entry.dir, depth, open, mark: mark ?? null, ignored: !mark && underIgnored(this.ignored, path) });
       if (entry.dir && (open || this.onlyChanged || this.matchCache)) this.rows(path, depth + 1, out, t);
     }
     return out;
+  }
+
+  /** 树的一行。虚拟列表的渲染器里挂不了 handler（宿主直接抛），
+   *  所以这里只有样式，点击和右键交给列表上的 on_item_click / on_item_secondary_click。 */
+  treeRow(r, t) {
+    const color = r.mark ? markColor(r.mark, t) : r.ignored ? t.dim : t.foreground;
+    return h_flex().h(28).flex_none().pl(14 + r.depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer()
+      .hover(s => s.bg(t.hover)).tooltip(absolute(this.root ?? "", r.path))
+      .child(r.dir ? svg(`mods/filescout/chevron-${r.open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
+      .child(iconEl(r.name, r.dir, t))
+      .child(div().flex_1().min_w(0).truncate().text_color(color).child(r.name));
+  }
+
+  /** 树那一格：搜索结果、空状态那几句话、普通树。树走虚拟列表——
+   *  一万行也只画看得见的那几十行，行数再多也不会把一帧撑爆。 */
+  treeArea(t, rows) {
+    const hint = (text, size = 12) => div().flex_none().p(8).text_size(size).text_color(t.dim).child(text);
+    if (this.results) return v_flex().id("filescout-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
+      .when(this.results.length === 0, el => el.child(hint(this.L("noResults"))))
+      .children(this.resultRows(t));
+    const id = "filescout-tree-list";
+    this.treeMap = new Map(rows.map(r => [r.path, r]));
+    return v_flex().id("filescout-tree").flex_1().min_h(0)
+      .child(div().flex_1().min_h(0).relative().overflow_hidden()
+        .child(v_virtual_list(id, rows.length, 28, i => rows[i].path, range => rows.slice(range.start, range.end).map(r => this.treeRow(r, t)))
+          .on_item_click((key, cx) => this.openRow(key, cx))
+          .on_item_secondary_click((key, event, cx) => this.rowMenuOf(key, event, cx)))
+        .child(Scrollbar.vertical(id).viewport_from_layout().absolute().inset_0()))
+      .when(Boolean(this.error), el => el.child(hint(this.error)))
+      .when(!this.error && this.searching, el => el.child(hint(this.L("searching"))))
+      .when(!this.error && !this.entries.get("")?.length, el => el.child(hint(this.loading ? this.L("loadingFiles") : this.root ? this.L("noFiles") : this.L("noFolder"))))
+      .when(this.limited, el => el.child(hint(this.L("limited"), 11)));
+  }
+
+  /** 列表回来的是 key（就是路径）：目录就展开/收起，文件就预览。 */
+  openRow(key, cx) {
+    const r = this.treeMap?.get(key);
+    if (!r) return;
+    if (r.dir) this.toggle(r.path, cx);
+    else { this.show(r.path, cx); cx.notify(); }
+  }
+
+  rowMenuOf(key, event, cx) {
+    const r = this.treeMap?.get(key);
+    if (r) this.rowMenu(r.path, r.dir, event, cx);
   }
 
   // ---------- tree controls ----------
@@ -1157,12 +1196,7 @@ export default class Filescout extends View {
         .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(this.crumbs(t)))
       .when(tools.length > 0, el => el.child(h_flex().id("filescout-tools").h(30).flex_none().px(9).gap(6).items_center().children(tools)))
-      .when(!this.file, el => el.child(v_flex().id("filescout-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.results ? this.resultRows(t) : this.rows("", 0, [], t))
-        .when(Boolean(this.error), el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error)))
-        .when(!this.error && this.searching, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.L("searching"))))
-        .when(!this.error && !this.searching && this.results && this.results.length === 0, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.L("noResults"))))
-        .when(!this.error && !this.results && !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.loading ? this.L("loadingFiles") : this.root ? this.L("noFiles") : this.L("noFolder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child(this.L("limited"))))))
+      .when(!this.file, el => el.child(this.treeArea(t, this.results ? null : this.rows("", 0, [], t))))
       .when(Boolean(this.file), el => el.child(
         this.image
           ? v_flex().id("filescout-img").flex_1().min_h(0).overflow_hidden().items_center().justify_center().p(10)
