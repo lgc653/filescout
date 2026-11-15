@@ -39,10 +39,17 @@ function rollup(marks) {
   return dirs;
 }
 
-/** .gitignore 命中的条目：集合里存去掉尾斜杠的仓库相对路径，自身或落在某个被忽略目录下都算。 */
+/** .gitignore 命中的条目：集合里存去掉尾斜杠的仓库相对路径，自身或落在某个被忽略目录下都算。
+ *  从自身往上一层一层查 Set（每行固定几次哈希）：被忽略的目录整体在集合里，
+ *  所以祖先命中就等于落在它下面。以前逐条遍历，几千条的仓库一帧能跑出几秒。 */
 const underIgnored = (set, rel) => {
-  for (const ig of set) if (rel === ig || rel.startsWith(ig + "/")) return true;
-  return false;
+  if (!set.size) return false;
+  for (let p = rel;;) {
+    if (set.has(p)) return true;
+    const i = p.lastIndexOf("/");
+    if (i <= 0) return false;
+    p = p.slice(0, i);
+  }
 };
 
 // ---------- diff：先把 unified diff 解析成行数据，渲染只负责画 ----------
