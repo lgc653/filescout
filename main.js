@@ -333,7 +333,7 @@ export default class Filescout extends View {
     this.results = null;
     this.search = InputState.new({ placeholder: this.L("search") });
     this.searchSeq = 0;
-    this.search.on("change", (_e, cx) => { this.filter = this.search.value(); this.results = null; cx.notify(); });
+    this.search.on("change", (_e, cx) => { this.filter = this.search.value(); this.results = null; this.treeVer++; cx.notify(); });
     this.search.on("submit", (_e, cx) => this.searchAll(cx));
     // Markdown 默认看渲染后的样子，可切回源码。
     this.mdView = true;
@@ -360,11 +360,20 @@ export default class Filescout extends View {
     this.entries = new Map();
     this.folders = new Set();
     this.pending = new Set();
+    // 刷新是「攒改动 + 跑一趟」：busy 表示有趟在跑，again 表示这趟跑完还得补一趟；
+    // changed 是攒下来的改动路径，null 表示全量（没人盯目录时只能全量）。
+    this.busy = false;
+    this.again = false;
+    this.changed = new Set();
+    // 树的扁平化结果缓存：treeVer 变一次就重建，平时直接给上一帧那份。
+    this.treeVer = 0;
     this.marks = {};
     this.dirty = new Map();
     this.ignored = new Set();
     this.refresh(cx);
-    cx.timer.every(10000, cx => this.refresh(cx));
+    // 本机有 watch 顶着，定时这趟只补个根目录（深处的改动 watch 会报）；
+    // 远端 watch 不生效，定时这趟就是唯一的全量。
+    cx.timer.every(10000, cx => this.refresh(cx, this.watched ? [] : null));
   }
 
   // ---------- browser ----------
@@ -374,7 +383,7 @@ export default class Filescout extends View {
     this.watched = root;
     const context = this.context;
     cx.spawn(async cx => {
-      try { while (this.context === context) { await watchFolder(root); if (this.current(context)) this.refresh(cx); } }
+      try { while (this.context === context) { const changed = await watchFolder(root); if (this.current(context)) this.refresh(cx, changed); } }
       catch { if (this.context === context) this.watched = null; }
     });
   }
@@ -395,63 +404,112 @@ export default class Filescout extends View {
     const used = [...this.entries.entries()].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
     this.entries.set(path, this.order(entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used)))));
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
+    this.treeVer++;
   }
 
-  refresh(cx) {
+  /** 重列这几个目录；folders 为 null 就是全量（首次进来、切目录、远端定时兜底）。
+   *  已经在列的那几个不排队：一份正要回来的新列表就是答案。 */
+  async reloadFolders(folders, context) {
+    for (const path of folders ?? ["", ...this.folders]) {
+      if (!this.current(context)) return;
+      if (this.pending.has(path)) continue;
+      this.pending.add(path);
+      try { await this.loadFolder(path, context); }
+      finally { if (this.context === context) this.pending.delete(path); }
+    }
+  }
+
+  /** watch 报的绝对路径 → 真正要重列的目录：改动自己，加它每一层祖先里展开着的那些。
+   *  批次里出现根目录（或面板目录之外的东西）就返回 null，整棵重来。 */
+  foldersFor(paths) {
+    const win = platform() === "windows", root = slashed(this.root ?? "").replace(/\/+$/, "");
+    const base = win ? root.toLowerCase() : root, out = new Set([""]);
+    for (const p of paths) {
+      const rel = slashed(p).replace(/\/+$/, ""), low = win ? rel.toLowerCase() : rel;
+      if (!base || low === base || !low.startsWith(`${base}/`)) return null;
+      for (let dir = rel.slice(root.length + 1);;) {
+        if (this.folders.has(dir)) out.add(dir);
+        const cut = dir.lastIndexOf("/");
+        if (cut < 0) break;
+        dir = dir.slice(0, cut);
+      }
+    }
+    return [...out];
+  }
+
+  /** git 的三样东西：改动标记、被忽略的条目、增删行数。不在仓库里就都是空的。 */
+  async gitStatus({ cwd, on }) {
+    const marks = {}, ignored = new Set();
+    let added = 0, removed = 0;
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
+    if (top?.code !== 0) return { marks, ignored, added, removed };
+    // 键用相对面板目录的路径，省掉绝对路径的斜杠差异。
+    const base = slashed(top.stdout.trim()) + "/", root = slashed(cwd) + "/";
+    // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
+    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
+    if (status?.code === 0) {
+      for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
+        const full = base + entry.slice(3), xy = entry.slice(0, 2);
+        if (!full.startsWith(root)) continue;
+        marks[full.slice(root.length)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+      }
+    }
+    // .gitignore 命中的条目 git status 不报，单独列一份：渲染时压暗，对齐 Zed 的 Ignored 色。
+    const ls = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd, on }).catch(() => null);
+    if (ls?.code === 0) for (const p of ls.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
+      const full = base + p.replace(/\/$/, "");
+      if (full.startsWith(root)) ignored.add(full.slice(root.length));
+    }
+    const numstat = await exec("git", ["--no-optional-locks", "diff", "HEAD", "--numstat"], { cwd, on }).catch(() => null);
+    if (numstat?.code === 0) for (const line of numstat.stdout.split("\n")) {
+      const [plus, minus] = line.split("\t");
+      if (/^\d+$/.test(plus)) added += Number(plus);
+      if (/^\d+$/.test(minus)) removed += Number(minus);
+    }
+    return { marks, ignored, added, removed };
+  }
+
+  /** 刷新：一趟 = 重列受影响的目录 + 重取 git 状态。changed 只有 watch 给，
+   *  是那批改动的绝对路径；没给就是全量重列。正在跑的那趟跑完会补上这一趟攒下的改动。 */
+  refresh(cx, changed) {
     const { cwd, on } = this.fixed ?? location(), next = this.ctxKey();
     if (next !== this.context?.key) {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.pending = new Set(); this.marks = {}; this.dirty = new Map(); this.ignored = new Set(); this.show(null); this.watched = null; this.error = null; this.limited = false;
-      this.loading = false;
+      // 换了目录：正在跑的那趟自己会退出，状态归零，这一趟必须全量。
+      this.loading = false; this.busy = false; this.again = false; this.changed = null; this.treeVer++;
       if (saved?.file) this.show(saved.file, cx);
       if (this.openedFile) { this.show(this.openedFile, cx); this.openedFile = null; }
       if (this.diffFile) { this.showDiff(this.diffFile, cx); this.diffFile = null; }
     }
-    if (!cwd || this.loading) return;
-    const context = this.context;
-    this.loading = true;
+    if (!cwd) return;
     this.limited = false;
+    if (!changed) this.changed = null;
+    else if (this.changed) for (const p of changed) this.changed.add(p);
+    if (this.busy) { this.again = true; return; }
+    this.busy = true;
+    this.loading = true;
+    const context = this.context;
     cx.spawn(async cx => {
-      try {
-        for (const path of ["", ...this.folders]) {
-          if (!this.current(context)) return;
-          await this.loadFolder(path, context);
-        }
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
-        const marks = {}, ignored = new Set();
-        let added = 0, removed = 0;
-        if (top?.code === 0) {
-          // 键用相对面板目录的路径，省掉绝对路径的斜杠差异。
-          const base = slashed(top.stdout.trim()) + "/", root = slashed(cwd) + "/";
-          // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
-          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
-          if (status?.code === 0) {
-            for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-              const full = base + entry.slice(3), xy = entry.slice(0, 2);
-              if (!full.startsWith(root)) continue;
-              marks[full.slice(root.length)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
-            }
-          }
-          // .gitignore 命中的条目 git status 不报，单独列一份：渲染时压暗，对齐 Zed 的 Ignored 色。
-          const ls = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd, on }).catch(() => null);
-          if (ls?.code === 0) for (const p of ls.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-            const full = base + p.replace(/\/$/, "");
-            if (full.startsWith(root)) ignored.add(full.slice(root.length));
-          }
-          const numstat = await exec("git", ["--no-optional-locks", "diff", "HEAD", "--numstat"], { cwd, on }).catch(() => null);
-          if (numstat?.code === 0) for (const line of numstat.stdout.split("\n")) {
-            const [plus, minus] = line.split("\t");
-            if (/^\d+$/.test(plus)) added += Number(plus);
-            if (/^\d+$/.test(minus)) removed += Number(minus);
-          }
-        }
-        if (!this.current(context)) return;
-        this.marks = marks; this.dirty = rollup(marks); this.ignored = ignored; this.stat = { added, removed }; this.error = null; this.watch(cwd, cx);
-        if (this.onlyChanged) this.ensureChangedFolders(cx);
-      } catch (e) { if (this.current(context)) this.error = String(e); }
-      finally { if (this.context === context) this.loading = false; cx.notify(); }
+      for (;;) {
+        const paths = this.changed; this.changed = new Set(); this.again = false;
+        if (!this.current(context)) break;
+        try {
+          await this.reloadFolders(paths ? this.foldersFor(paths) : null, context);
+          if (!this.current(context)) break;
+          const git = await this.gitStatus(context);
+          if (!this.current(context)) break;
+          this.marks = git.marks; this.dirty = rollup(git.marks); this.ignored = git.ignored; this.stat = { added: git.added, removed: git.removed };
+          this.error = null; this.watch(context.cwd, cx);
+          if (this.onlyChanged) this.ensureChangedFolders(cx);
+          this.treeVer++;
+        } catch (e) { if (this.current(context)) this.error = String(e); break; }
+        if (!this.again) break;
+      }
+      if (this.context === context) { this.busy = false; this.loading = false; }
+      cx.notify();
     });
   }
 
@@ -473,6 +531,7 @@ export default class Filescout extends View {
         });
       }
     }
+    this.treeVer++;
     cx.notify();
   }
 
@@ -713,7 +772,7 @@ export default class Filescout extends View {
     });
   }
 
-  rows(prefix, depth, out, t) {
+  rows(prefix, depth, out) {
     if (depth === 0) this.matchCache = this.filter.trim() ? this.buildMatches() : null;
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
@@ -726,9 +785,20 @@ export default class Filescout extends View {
       if (this.onlyChanged && !mark) continue;
       if (this.matchCache && !(entry.dir ? this.matchCache.dirs.has(path) : this.matchCache.files.has(path))) continue;
       out.push({ path, name: entry.name, dir: entry.dir, depth, open, mark: mark ?? null, ignored: !mark && underIgnored(this.ignored, path) });
-      if (entry.dir && (open || this.onlyChanged || this.matchCache)) this.rows(path, depth + 1, out, t);
+      if (entry.dir && (open || this.onlyChanged || this.matchCache)) this.rows(path, depth + 1, out);
     }
     return out;
+  }
+
+  /** 树的扁平化结果：虚拟列表每帧都要这数组，以前每帧都重走一遍整棵树、
+   *  还顺手重建一份 treeMap。entries / 展开状态 / 标记 / 过滤 / 排序变了才重建
+   *  （那些地方都会 treeVer++），平时直接给上一帧那份。 */
+  treeRows() {
+    if (this.rowCache && this.treeVer === this.rowVer) return this.rowCache;
+    const rows = this.rows("", 0, []);
+    this.rowCache = rows; this.rowVer = this.treeVer;
+    this.treeMap = new Map(rows.map(r => [r.path, r]));
+    return rows;
   }
 
   /** 树的一行。虚拟列表的渲染器里挂不了 handler（宿主直接抛），
@@ -750,7 +820,6 @@ export default class Filescout extends View {
       .when(this.results.length === 0, el => el.child(hint(this.L("noResults"))))
       .children(this.resultRows(t));
     const id = "filescout-tree-list";
-    this.treeMap = new Map(rows.map(r => [r.path, r]));
     return v_flex().id("filescout-tree").flex_1().min_h(0)
       .child(div().flex_1().min_h(0).relative().overflow_hidden()
         .child(v_virtual_list(id, rows.length, 28, i => rows[i].path, range => rows.slice(range.start, range.end).map(r => this.treeRow(r, t)))
@@ -786,17 +855,20 @@ export default class Filescout extends View {
   toggleSort(cx) {
     this.sortDir = -this.sortDir;
     for (const list of this.entries.values()) this.order(list);
+    this.treeVer++;
     cx.notify();
   }
 
   toggleHidden(cx) {
     this.showHidden = !this.showHidden;
+    this.treeVer++;
     cx.notify();
   }
 
   toggleChanged(cx) {
     this.onlyChanged = !this.onlyChanged;
     if (this.onlyChanged) this.ensureChangedFolders(cx);
+    this.treeVer++;
     cx.notify();
   }
 
@@ -813,6 +885,7 @@ export default class Filescout extends View {
         finally { if (this.context === context) this.pending.delete(dir); cx.notify(); }
       });
     }
+    this.treeVer++;
     cx.notify();
   }
 
@@ -874,6 +947,7 @@ export default class Filescout extends View {
     this.search.set_value("");
     this.filter = "";
     this.results = null;
+    this.treeVer++;
     cx.notify();
   }
 
@@ -972,6 +1046,7 @@ export default class Filescout extends View {
         finally { if (this.context === context) this.pending.delete(acc); cx.notify(); }
       });
     }
+    this.treeVer++;
     cx.notify();
   }
 
@@ -1196,7 +1271,7 @@ export default class Filescout extends View {
         .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(this.crumbs(t)))
       .when(tools.length > 0, el => el.child(h_flex().id("filescout-tools").h(30).flex_none().px(9).gap(6).items_center().children(tools)))
-      .when(!this.file, el => el.child(this.treeArea(t, this.results ? null : this.rows("", 0, [], t))))
+      .when(!this.file, el => el.child(this.treeArea(t, this.results ? null : this.treeRows())))
       .when(Boolean(this.file), el => el.child(
         this.image
           ? v_flex().id("filescout-img").flex_1().min_h(0).overflow_hidden().items_center().justify_center().p(10)
