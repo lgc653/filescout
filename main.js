@@ -290,7 +290,8 @@ async function directory(path, on, lang) {
   let r;
   try { r = await exec("sh", ["-c", script, "files", path], { on }); }
   catch (e) {
-    if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
+    // 宿主报的是「cannot run sh: program not found」，只认后半句。
+    if (on && /program not found/i.test(String(e))) return windowsDirectory();
     throw e;
   }
   if (r.code !== 0) throw new Error(r.stderr || msg(lang, "listErr"));
