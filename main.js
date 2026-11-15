@@ -285,12 +285,15 @@ async function directory(path, on, lang) {
     if (r.code !== 0) return powershellDirectory();
     return JSON.parse(r.stdout || "[]").map(([name, dir]) => ({ name, dir: dir === 1 }));
   };
-  if (!on && platform() === "windows") return windowsDirectory();
+  // Windows 先走 node（~80ms）：这台机器没有 sh，先试只会白撞一次宿主的
+  // 「cannot run sh: program not found」。node 走不通（对端未必也是 Windows）再退 sh。
+  if (platform() === "windows") {
+    try { return await windowsDirectory(); } catch { /* 接着往下试 sh */ }
+  }
   const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
   let r;
   try { r = await exec("sh", ["-c", script, "files", path], { on }); }
   catch (e) {
-    // 宿主报的是「cannot run sh: program not found」，只认后半句。
     if (on && /program not found/i.test(String(e))) return windowsDirectory();
     throw e;
   }
