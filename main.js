@@ -21,9 +21,13 @@ const PER_FOLDER = 500, TOTAL = 5000;
 const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
 const MARK_RANK = { M: 1, A: 2, D: 3, U: 4 };
 const markColor = (mark, t) => t[MARK_COLOR[mark]];
-/** 平台不会中途变：第一次问宿主就记下来，渲染上万行时省掉上万次 window() 调用。 */
+/** 平台不会中途变：第一次问宿主就记下来，渲染上万行时省掉上万次 window() 调用。
+ *  窗口还没就绪时 window() 给不出 platform，这一帧别记，下一帧再问。 */
 let _platform = null;
-const platform = () => (_platform ??= window()?.platform ?? "linux");
+const platform = () => {
+  if (!_platform) _platform = window()?.platform ?? null;
+  return _platform ?? "linux";
+};
 /** Herdr 的 cwd 在 Windows 上用反斜杠，git 给的是正斜杠：统一成一把尺子再比。 */
 const slashed = (p) => (platform() === "windows" ? p.replace(/\\/g, "/") : p);
 
@@ -276,10 +280,15 @@ async function detectEditors() {
 }
 
 async function directory(path, on, lang) {
+  // 列目录失败时把走过的每条路和各自的错误攒起来：面板底部只显示最后一句，
+  // 光看「cannot run sh」看不出 node / powershell 为什么也没成。
+  const why = [`platform=${platform()} on=${on}`];
   const powershellDirectory = async () => {
     // Fallback when node is not on PATH: ~1.4s per folder on a typical Windows box.
-    const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
-    if (r.code !== 0) throw new Error(r.stderr || msg(lang, "listErr"));
+    let r;
+    try { r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on }); }
+    catch (e) { why.push("ps-exec:" + e); throw e; }
+    if (r.code !== 0) { why.push("ps-code:" + r.code + ":" + String(r.stderr).slice(0, 300)); throw new Error(r.stderr || msg(lang, "listErr")); }
     const result = JSON.parse(r.stdout || "[]");
     return Array.isArray(result) ? result : [result];
   };
@@ -288,21 +297,22 @@ async function directory(path, on, lang) {
     const script = "const fs=require('fs'),p=process.argv[1],out=[];try{for(const e of fs.readdirSync(p,{withFileTypes:true})){if(e.name==='.git')continue;let dir=e.isDirectory();if(!dir&&e.isSymbolicLink()){try{dir=fs.statSync(p+'/'+e.name).isDirectory()}catch{}}out.push([e.name,dir?1:0]);if(out.length>=501)break}}catch(err){process.stderr.write(String((err&&err.message)||err));process.exit(1)}process.stdout.write(JSON.stringify(out))";
     let r;
     try { r = await exec("node", ["-e", script, path], { on }); }
-    catch { return powershellDirectory(); }
-    if (r.code !== 0) return powershellDirectory();
+    catch (e) { why.push("node-exec:" + e); return powershellDirectory(); }
+    if (r.code !== 0) { why.push("node-code:" + r.code + ":" + String(r.stderr).slice(0, 300)); return powershellDirectory(); }
     return JSON.parse(r.stdout || "[]").map(([name, dir]) => ({ name, dir: dir === 1 }));
   };
   // Windows 先走 node（~80ms）：这台机器没有 sh，先试只会白撞一次宿主的
   // 「cannot run sh: program not found」。node 走不通（对端未必也是 Windows）再退 sh。
   if (platform() === "windows") {
-    try { return await windowsDirectory(); } catch { /* 接着往下试 sh */ }
+    try { return await windowsDirectory(); } catch (e) { why.push("win:" + e); }
   }
   const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
   let r;
   try { r = await exec("sh", ["-c", script, "files", path], { on }); }
   catch (e) {
-    if (on && /program not found/i.test(String(e))) return windowsDirectory();
-    throw e;
+    // sh 起不来，而上面那趟 node 还没试过：这台机器（或对端）其实是 Windows，用 node 再试一遍。
+    if (platform() !== "windows" && /program not found/i.test(String(e))) return windowsDirectory();
+    throw new Error(`${why.join(" | ")} :: ${e}`);
   }
   if (r.code !== 0) throw new Error(r.stderr || msg(lang, "listErr"));
   const fields = r.stdout.split("\0"), out = [];
