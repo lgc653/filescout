@@ -157,6 +157,7 @@ const I18N = {
     sortTip: "按名称排序，点击切换升序 / 降序", hideTip: "显示或隐藏以点开头的文件",
     onlyChangedTip: "只列出有 git 改动的文件和目录",
     splitTip: "单栏 / 分栏看 diff", wrapTip: "长行折行显示 / 恢复截断（只影响单栏）", mdTip: "渲染后的预览 / 看源码",
+    maxTip: "放大成浮窗（Enter）",
     search: "搜索文件名，回车搜全部", clearSearch: "清空搜索",
     searching: "正在搜索…", noResults: "没有匹配的文件",
     openFolder: "在文件管理器中打开", openApp: "用默认程序打开",
@@ -178,6 +179,7 @@ const I18N = {
     sortTip: "Sort by name — click to switch between A→Z and Z→A", hideTip: "Show or hide dot-files",
     onlyChangedTip: "List only files and folders with Git changes",
     splitTip: "Unified or split diff view", wrapTip: "Wrap long lines or clip them (unified only)", mdTip: "Rendered preview or source",
+    maxTip: "Enlarge into a floating window (Enter)",
     search: "Search file names, Enter searches all", clearSearch: "Clear search",
     searching: "Searching…", noResults: "No matching files",
     openFolder: "Open in file manager", openApp: "Open with default app",
@@ -343,6 +345,10 @@ export default class Filescout extends View {
     this.results = null;
     this.search = InputState.new({ placeholder: this.L("search") });
     this.searchSeq = 0;
+    // 搜索框聚焦时回车要提交搜索，不能被面板的「Enter 放大」抢走。
+    this.typing = false;
+    this.search.on("focus", () => { this.typing = true; });
+    this.search.on("blur", () => { this.typing = false; });
     this.search.on("change", (_e, cx) => { this.filter = this.search.value(); this.results = null; this.treeVer++; cx.notify(); });
     this.search.on("submit", (_e, cx) => this.searchAll(cx));
     // Markdown 默认看渲染后的样子，可切回源码。
@@ -1270,14 +1276,22 @@ export default class Filescout extends View {
     // 看 diff 时表头给的是这个文件的行数，比整个仓库的总数有用。
     const stat = this.diff ? this.diffStat : this.stat;
     return v_flex().id("filescout").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .when(Boolean(this.overlay), el => el.track_focus(this.handle).on_key_down(e => { if (e.key === "escape") closeOverlay(this.overlay); }))
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        // 浮窗（放大 / 看 diff）自己拿键盘：Esc 关掉。
+        if (this.overlay) { if (e.key === "escape") closeOverlay(this.overlay); return; }
+        // 搜索框里打字时别抢键（回车还要提交搜索）。
+        if (this.typing) return;
+        // 正在看文件（预览 / 图片 / diff）时，回车 = 点标题栏那个 ⤢ 放大。
+        if (e.key === "enter" && this.file) { cx.stop_propagation(); this.expand(); }
+      })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("filescout-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("File Scout"))
         .when(count > 0, el => el.child(h_flex().h(18).px(6).items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.dim).child(this.L("files", count))))
         .when(stat?.added > 0, el => el.child(div().text_size(11).text_color(t.ansi2).child(`+${stat.added}`)))
         .when(stat?.removed > 0, el => el.child(div().text_size(11).text_color(t.ansi1).child(`-${stat.removed}`)))
-        .when(!this.overlay, el => el.child(div().id("filescout-max").w(18).cursor_pointer().text_color(t.muted).on_click(() => this.expand()).child(svg("mods/filescout/icons/maximize.svg").size(13))))
+        .when(!this.overlay, el => el.child(div().id("filescout-max").w(18).cursor_pointer().text_color(t.muted).tooltip(this.L("maxTip")).on_click(() => this.expand()).child(svg("mods/filescout/icons/maximize.svg").size(13))))
         .when(Boolean(this.overlay), el => el.child(div().id("filescout-close").cursor_pointer().text_color(t.muted).on_click(() => closeOverlay(this.overlay)).child("✕")))
         .child(this.crumbs(t)))
       .when(tools.length > 0, el => el.child(h_flex().id("filescout-tools").h(30).flex_none().px(9).gap(6).items_center().children(tools)))

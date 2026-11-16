@@ -28,7 +28,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 - **图片预览**：`.png` `.jpg` `.jpeg` `.gif` `.webp` `.bmp` `.ico` `.svg`
 - **预览跟随磁盘**（本机）：正在看的文件被外部（比如 agent）改了，面板会自动刷新
 - Markdown 渲染预览（`.md` / `.markdown`），工具栏可在「源码 / 预览」之间切换
-- 标题栏 ⤢ 把面板放大成浮窗，带上当前正在预览的文件；**Esc 关闭浮窗**
+- 标题栏 ⤢ 把面板放大成浮窗，带上当前正在预览的文件；预览文件时按 **Enter** 同样放大，**Esc 关闭浮窗**
 - 预览不出来（二进制、过大、读不了）时直接给一个**用默认程序打开**按钮，不用再回右键菜单
 - 右键文件或目录：
   - **用默认程序打开** / **在文件管理器中打开**（Open with default app / Open in file manager）
