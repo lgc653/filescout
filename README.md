@@ -15,7 +15,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 
 ## 功能 / Features
 
-- 惰性文件树、文本预览
+- 惰性文件树；代码预览带语法高亮（按扩展名认语言，交给宿主编辑器；认不出的退化到最接近的语法，不会整篇灰着）
 - git 状态染色（Zed 风格）：修改=黄、新增=绿、删除=红、冲突=紫；文件名和目录名都上色，目录取子树里最严重的状态；被 `.gitignore` 忽略的压成暗灰（真实改动优先）
 - 标题栏显示 `N 个改动` 与 `+新增 / -删除` 行数
 - 标题栏下一条**工具栏**（视图开关都在这里，标题不再挤）：
@@ -41,7 +41,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
   - **把绝对路径插入 agent**
   - **查看 diff**（有变更的文件才有）—— 浮窗里看可视化 diff：单栏 / 分栏可切换，左边缘绿红变更条、行号栏带底色、**行内高亮**标出这一行里到底改了哪几个字（单栏），表头给这个文件的 `+n/-m`；超过面板宽的长行可切「换行」折行看全；大 diff 只画可见行，不再截断
 - 菜单支持 ↑/↓、Enter、Esc
-- VSCode 风格的文件类型图标（Material Icon Theme，MIT；Office 三件套用 [vscode-icons](https://github.com/vscode-icons/vscode-icons) 的官方 Office 图标，MIT）
+- 图标：文件按类型、目录按名字上色。目录图标是 Material Icon Theme 的文件夹轮廓换色变体（src 蓝 / test 绿 / docs 琥珀 / dist 红 / 依赖绿 / 资源青…）；文件图标补齐了语言（Swift / Ruby / PHP / Lua / Haskell / R）、媒体（音视频 / 字体）、Terraform / GraphQL / notebook / 证书等，另有一份按文件名认的清单（`Dockerfile` / `Makefile` / `CMakeLists.txt` / `go.mod` / `.env*` / `Cargo.toml` …）。Office 三件套用 [vscode-icons](https://github.com/vscode-icons/vscode-icons) 的官方 Office 图标（MIT）。全部扁平单色，明暗主题下都够看
 
 
 ## 语言 / Language
@@ -129,4 +129,4 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 
 ## 来源 / Credits
 
-基于 Herdr 官方 `defaults/mods/files`（Apache-2.0）修改。图标来自 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)（MIT）；Word / Excel / PowerPoint 三个用的是 [vscode-icons](https://github.com/vscode-icons/vscode-icons)（MIT）里的微软 Office 官方图标（Office 标识归微软所有）。
+基于 Herdr 官方 `defaults/mods/files`（Apache-2.0）修改。图标来自 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)（MIT）——文件夹图标是它的轮廓换色；语言/媒体等文件图标来自 [Material Design Icons](https://github.com/Templarian/MaterialDesign)（MIT），压平成单色；Word / Excel / PowerPoint 三个用的是 [vscode-icons](https://github.com/vscode-icons/vscode-icons)（MIT）里的微软 Office 官方图标（Office 标识归微软所有）。

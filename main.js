@@ -15,7 +15,21 @@ function location() {
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on, space: space?.id };
 }
 const key = () => JSON.stringify(location());
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
+/** 宿主按「扩展名」找语法（Sublime / syntect 那套），这里只补它认不出的、或扩展名和语法名对不上的。
+ *  认得出的原样传，认不出的退化到最接近的语法，总比整篇灰着强。 */
+const LANG = {
+  ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js",
+  jsonc: "json", json5: "json", jsonl: "json", ndjson: "json", map: "json",
+  svelte: "html", vue: "html", astro: "html", htm: "html",
+  scss: "css", sass: "css", less: "css",
+  toml: "yaml", tf: "yaml", tfvars: "yaml", lock: "yaml", service: "yaml",
+  kt: "java", kts: "java", gradle: "groovy",
+  mdx: "markdown", mkd: "markdown",
+  ps1: "sh", env: "sh", dockerfile: "sh",
+  cmake: "make", makefile: "make", mk: "make",
+  csv: "properties", tsv: "properties", log: "txt",
+  m: "c", mm: "cpp", sqlite3: "sql", gql: "js", graphql: "js",
+};
 const PER_FOLDER = 500, TOTAL = 5000;
 // Zed 风格：按 git 状态给名字上色（文件和目录都算，目录取子树里最严重的那个）。
 const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
@@ -214,34 +228,74 @@ const reopen = (slot, spec) => {
 
 const FILE_ICON = {
   ts: "typescript", tsx: "react", js: "javascript", jsx: "react", mjs: "javascript", cjs: "javascript",
-  vue: "vue", svelte: "svelte", html: "html", htm: "html",
+  vue: "vue", svelte: "svelte", astro: "html", html: "html", htm: "html",
   css: "css", scss: "sass", sass: "sass", less: "less",
-  json: "json", jsonc: "json", md: "markdown", markdown: "markdown",
+  json: "json", jsonc: "json", json5: "json", jsonl: "json", ndjson: "json", map: "json",
+  md: "markdown", markdown: "markdown", mdx: "markdown", mkd: "markdown",
   yml: "yaml", yaml: "yaml", toml: "toml", xml: "xml",
-  py: "python", go: "go", rs: "rust", java: "java", kt: "kotlin",
-  c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", cs: "csharp",
+  ini: "settings", cfg: "settings", conf: "settings", env: "settings", properties: "settings", editorconfig: "settings",
+  py: "python", go: "go", rs: "rust", java: "java", kt: "kotlin", kts: "kotlin", gradle: "java",
+  swift: "swift", rb: "ruby", gemspec: "ruby", php: "php", lua: "lua", hs: "haskell", r: "r",
+  tf: "terraform", tfvars: "terraform", graphql: "graphql", gql: "graphql",
+  c: "c", h: "c", m: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", mm: "cpp", cs: "csharp",
   sh: "console", bash: "console", zsh: "console", ps1: "console", bat: "console", cmd: "console",
-  sql: "database", db: "database", sqlite: "database",
+  sql: "database", db: "database", sqlite: "database", sqlite3: "database",
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", ico: "image", svg: "svg",
+  avif: "image", tif: "image", tiff: "image", heic: "image",
   pdf: "pdf", zip: "zip", gz: "zip", tgz: "zip", tar: "zip", rar: "zip", "7z": "zip",
-  lock: "lock", txt: "document", log: "document",
-  xlsx: "excel", xls: "excel", xlsm: "excel", csv: "excel",
+  bz2: "zip", xz: "zip", zst: "zip", jar: "zip", war: "zip",
+  lock: "lock", txt: "document", text: "document", log: "document", srt: "document", vtt: "document",
+  diff: "diff", patch: "diff",
+  pem: "key", key: "key", crt: "key", cer: "key", p12: "key", pfx: "key", pub: "key",
+  woff: "font", woff2: "font", ttf: "font", otf: "font", eot: "font",
+  mp3: "audio", wav: "audio", flac: "audio", ogg: "audio", m4a: "audio", aac: "audio",
+  mp4: "video", mkv: "video", mov: "video", avi: "video", webm: "video",
+  ipynb: "notebook", cmake: "makefile",
+  xlsx: "excel", xls: "excel", xlsm: "excel", xlsb: "excel", csv: "excel", tsv: "excel", ods: "excel",
   docx: "word", doc: "word", rtf: "word", odt: "word",
-  pptx: "powerpoint", ppt: "powerpoint",
+  pptx: "powerpoint", ppt: "powerpoint", odp: "powerpoint",
 };
 
 const NAME_ICON = {
-  "package.json": "json", "tsconfig.json": "json", "jsconfig.json": "json",
-  "package-lock.json": "lock", "pnpm-lock.yaml": "lock", "yarn.lock": "lock", "cargo.lock": "lock",
-  ".gitignore": "git", ".gitattributes": "git", ".gitmodules": "git",
-  dockerfile: "docker", "docker-compose.yml": "docker", "docker-compose.yaml": "docker",
-  makefile: "makefile", license: "license", "license.md": "license", "readme.md": "markdown",
+  "package.json": "json", "tsconfig.json": "json", "jsconfig.json": "json", "composer.json": "php",
+  "package-lock.json": "lock", "pnpm-lock.yaml": "lock", "yarn.lock": "lock", "cargo.lock": "lock", "composer.lock": "lock",
+  ".gitignore": "git", ".gitattributes": "git", ".gitmodules": "git", ".gitkeep": "git",
+  dockerfile: "docker", "docker-compose.yml": "docker", "docker-compose.yaml": "docker", ".dockerignore": "docker",
+  makefile: "makefile", gnumakefile: "makefile", "cmakelists.txt": "makefile",
+  license: "license", "license.md": "license", licence: "license", copying: "license", notice: "license",
+  "readme.md": "markdown",
+  "go.mod": "go", "go.sum": "go", "cargo.toml": "toml",
+  "requirements.txt": "python", "pyproject.toml": "python", "setup.py": "python", pipfile: "python",
+  gemfile: "ruby", rakefile: "ruby", procfile: "console",
+  ".env": "settings", ".env.local": "settings", ".env.development": "settings", ".env.production": "settings", ".env.example": "settings",
+  ".editorconfig": "settings", ".npmrc": "settings", ".nvmrc": "settings", ".prettierrc": "settings", ".babelrc": "settings", ".eslintrc": "settings",
 };
 
-/** The row's icon: a Material file icon by name, else by extension, else null. */
+/** 目录按名字上色：同一个文件夹轮廓，只换配色，风格统一；没命中的还是默认棕。 */
+const FOLDER_ICON = {
+  src: "folder-src", source: "folder-src", lib: "folder-src", libs: "folder-src", app: "folder-src", core: "folder-src",
+  pkg: "folder-src", packages: "folder-src", modules: "folder-src", include: "folder-src",
+  test: "folder-test", tests: "folder-test", spec: "folder-test", specs: "folder-test", __tests__: "folder-test", testing: "folder-test", e2e: "folder-test",
+  doc: "folder-docs", docs: "folder-docs", documentation: "folder-docs", wiki: "folder-docs", guides: "folder-docs",
+  config: "folder-config", configs: "folder-config", conf: "folder-config", cfg: "folder-config", settings: "folder-config",
+  ".vscode": "folder-config", ".idea": "folder-config",
+  script: "folder-script", scripts: "folder-script", bin: "folder-script", tools: "folder-script",
+  ".github": "folder-git", ".gitlab": "folder-git",
+  node_modules: "folder-deps", vendor: "folder-deps", deps: "folder-deps", ".venv": "folder-deps", venv: "folder-deps",
+  build: "folder-build", dist: "folder-build", out: "folder-build", output: "folder-build", target: "folder-build", coverage: "folder-build",
+  assets: "folder-assets", public: "folder-assets", static: "folder-assets", media: "folder-assets", images: "folder-assets", img: "folder-assets", icons: "folder-assets", resources: "folder-assets", fonts: "folder-assets",
+  styles: "folder-style", style: "folder-style", css: "folder-style", scss: "folder-style", theme: "folder-style", themes: "folder-style",
+  components: "folder-component", component: "folder-component", views: "folder-component", pages: "folder-component", ui: "folder-component", widgets: "folder-component", layouts: "folder-component",
+  hooks: "folder-shared", composables: "folder-shared", utils: "folder-shared", util: "folder-shared", helpers: "folder-shared", common: "folder-shared", shared: "folder-shared",
+  api: "folder-api", server: "folder-api", routes: "folder-api", router: "folder-api", controllers: "folder-api", services: "folder-api",
+  models: "folder-model", model: "folder-model", entities: "folder-model", schema: "folder-model", schemas: "folder-model", migrations: "folder-model", data: "folder-model",
+  i18n: "folder-i18n", locales: "folder-i18n", locale: "folder-i18n", lang: "folder-i18n", translations: "folder-i18n",
+};
+
+/** The row's icon: a folder by name, else a file by name, else by extension, else null. */
 function iconOf(name, isDir) {
-  if (isDir) return "mods/filescout/icons/folder-base.svg";
   const lower = name.toLowerCase();
+  if (isDir) return `mods/filescout/icons/${FOLDER_ICON[lower] ?? "folder-base"}.svg`;
   const byName = NAME_ICON[lower];
   if (byName) return `mods/filescout/icons/${byName}.svg`;
   const dot = lower.lastIndexOf(".");
@@ -584,13 +638,18 @@ export default class Filescout extends View {
 
   /** 读到的文本画成只读编辑器；首次打开和磁盘刷新都走这里。 */
   setText(raw, path) {
-    const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
+    const t = theme(), name = path.slice(path.lastIndexOf("/") + 1);
+    const ext = (name.includes(".") ? name.split(".").pop() : name).toLowerCase();
     this.text = raw.length > 400000 ? raw.slice(0, 400000) + "\n… (file truncated)" : raw;
     this.code?.release();
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
       value: this.text,
       font_family: settings().font_family, font_size: 12,
-      syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+      syntax: {
+        keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3,
+        number: t.ansi1, constant: t.ansi6, boolean: t.ansi1, variable: t.foreground,
+        operator: t.muted, punctuation: t.muted, "string.escape": t.ansi3,
+      } });
   }
 
   /** 盯住正在预览的文件，磁盘一改就重读（只在本机）。 */

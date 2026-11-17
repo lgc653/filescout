@@ -17,6 +17,8 @@
 | F7 发送到 agent（带指令） | 不做（用户确认不需要） |
 | F8 新建文件 / 文件夹 / 重命名 | 不做（用户确认不需要） |
 | diff 可读性改造（VSCode 风格，见文末） | 已做 |
+| 代码语法高亮补齐（语言映射 + 12 个配色槽） | 已做（见 §七） |
+| 图标体系（文件夹图标 + 补齐扩展名/文件名映射） | 已做（见 §七） |
 
 
 ## 一、竞品对照
@@ -222,4 +224,33 @@
 
 - 折叠未改动区域（「展开 N 行」）—— git 已只给 3 行上下文，收益小。
 - 换行模式的行内高亮（见上）。
-- 语法高亮 diff。
+- 语法高亮 diff。（仍未做；但预览的语法高亮已在 §七 补齐。）
+
+---
+
+## 七、语法高亮补齐 + 图标体系（已做，2026-11-17）
+
+起因：和社区 Better Files / Better Icons 对比后，用户点名补这两块。
+
+### 语法高亮（预览的只读编辑器）
+
+宿主的 `EditorState.new` 是「按扩展名找语法」（混的 Sublime / syntect 那套），认得出就高亮，认不出整篇灰着。
+
+- `LANG` 从 10 条扩到 40 多条：只补宿主认不出的、或扩展名和语法名对不上的（`ts/tsx/mts/cts/jsx/mjs/cjs → js`、`toml/tf/tfvars/lock → yaml`、`scss/sass/less → css`、`kt/kts → java`、`gradle → groovy`、`ps1/env/dockerfile → sh`、`cmake/makefile/mk → make`、`csv/tsv → properties`、`m → c`、`mm → cpp`、`gql/graphql → js`…）。认得出的仍原样传。
+- `ext` 取文件名而不是整条路径，并统一小写（`README.MD` 这种以前会漏）。
+- `syntax` 槽位从 7 个补到宿主文档里的 12 个：新增 `boolean`(ansi1) / `variable`(foreground) / `operator`(muted) / `punctuation`(muted) / `string.escape`(ansi3)。
+- 拿 `.py` 探针文件在测试标签里逐个截图核对，确认关键字 / 字符串 / 注释 / 数字 / 类函数名都有色，且运算符、标点只是略淡，没糊。
+
+### 图标体系
+
+原来是 40 个图标、目录一律一个棕文件夹。
+
+- **目录按名字上色**：`FOLDER_ICON` 把 `src/test/docs/config/script/.github/node_modules/dist/assets/styles/components/hooks/api/models/i18n` 这些常见目录映射到 15 个换色变体（同一个 `folder-base` 轮廓，只换主体色 + 前襟色，风格统一）。没命中的仍是默认棕，避免整棵树花掉。
+- **文件图标补齐**：`FILE_ICON` 扩到 90 多条扩展名，`NAME_ICON` 补了 `Dockerfile / Makefile / CMakeLists.txt / go.mod / Cargo.toml / .env* / Gemfile / requirements.txt` 等按文件名认的清单。
+- 新图标 14 个（Swift / Ruby / PHP / Lua / Haskell / R / Terraform / GraphQL / 字体 / 音频 / 视频 / notebook / diff / 证书），从 MDI 拉官方路径压平成单色 Material 300/400；文件夹变体 15 个由 `folder-base.svg` 换色生成。
+- 归属写进 `NOTICE` 和 README（Material Icon Theme + Material Design Icons，均 MIT）。
+
+### 验证
+
+`herdr-app check` 通过、`status` 的 `errors` 为 `[]`；`.py` 预览 + 仓库目录树截图核对图标与配色。
+

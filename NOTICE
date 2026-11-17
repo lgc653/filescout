@@ -3,5 +3,11 @@ File Scout
 Based on Herdr's defaults/mods/files
 https://github.com/herdrdev/herdr-app — Apache-2.0
 
-File icons from Material Icon Theme
+File and folder icons from Material Icon Theme
 https://github.com/material-extensions/vscode-material-icon-theme — MIT
+
+Language, media and misc file icons from Material Design Icons
+https://github.com/Templarian/MaterialDesign — MIT
+
+Word/Excel/PowerPoint icons from vscode-icons
+https://github.com/vscode-icons/vscode-icons — MIT
