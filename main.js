@@ -32,9 +32,30 @@ const LANG = {
 };
 const PER_FOLDER = 500, TOTAL = 5000;
 // Zed 风格：按 git 状态给名字上色（文件和目录都算，目录取子树里最严重的那个）。
-const MARK_COLOR = { M: "ansi3", A: "ansi2", D: "ansi1", U: "ansi5" };
+// 颜色不用主题里的 ansi 槽：亮色主题下 ansi3 是暗橄榄、ansi2 是墨绿，名字和球都发褐发脏。
+// 固定两套 hex，按背景亮度挑；白底那套压到 600/700 档，黑底那套用 400 档。
+const MARK_HEX = {
+  light: { M: "#a16207", A: "#15803d", D: "#dc2626", U: "#7c3aed" },
+  dark: { M: "#e3b341", A: "#3fb950", D: "#f85149", U: "#a371f7" },
+};
 const MARK_RANK = { M: 1, A: 2, D: 3, U: 4 };
-const markColor = (mark, t) => t[MARK_COLOR[mark]];
+/** 宿主给了 appearance / is_dark，直接问它；万一是老宿主没这字段，退回按背景亮度算。 */
+const lightTheme = (t) => (t.is_dark === undefined ? luma(t.background) > 0.55 : !t.is_dark);
+const _lumaCache = new Map();
+function luma(color) {
+  const bg = String(color ?? "");
+  let v = _lumaCache.get(bg);
+  if (v === undefined) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(bg);
+    const [r, g, b] = m ? [1, 2, 3].map(i => parseInt(m[i], 16) / 255) : [0, 0, 0];
+    v = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    _lumaCache.set(bg, v);
+  }
+  return v;
+}
+const markColor = (mark, t) => (lightTheme(t) ? MARK_HEX.light : MARK_HEX.dark)[mark];
+/** 行尾的小球（Zed 那种）：文件 6px，目录 5px——目录的颜色是从子树卷上来的，小一号表示「里面有改动」。 */
+const markBall = (mark, t, dir) => div().flex_none().size(dir ? 5 : 6).rounded(dir ? 2 : 3).bg(markColor(mark, t));
 /** 平台不会中途变：第一次问宿主就记下来，渲染上万行时省掉上万次 window() 调用。
  *  窗口还没就绪时 window() 给不出 platform，这一帧别记，下一帧再问。 */
 let _platform = null;
@@ -884,7 +905,8 @@ export default class Filescout extends View {
       .hover(s => s.bg(t.hover)).tooltip(absolute(this.root ?? "", r.path))
       .child(r.dir ? svg(`mods/filescout/chevron-${r.open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
       .child(iconEl(r.name, r.dir, t))
-      .child(div().flex_1().min_w(0).truncate().text_color(color).child(r.name));
+      .child(div().flex_1().min_w(0).truncate().text_color(color).child(r.name))
+      .when(Boolean(r.mark), el => el.child(markBall(r.mark, t, r.dir)));
   }
 
   /** 树那一格：搜索结果、空状态那几句话、普通树。树走虚拟列表——
@@ -1067,7 +1089,8 @@ export default class Filescout extends View {
         .child(iconEl(name, false, t))
         .child(v_flex().flex_1().min_w(0).gap(1)
           .child(div().truncate().text_color(mark ? markColor(mark, t) : t.foreground).child(name))
-          .child(div().truncate().text_size(11).text_color(t.dim).child(dir)));
+          .child(div().truncate().text_size(11).text_color(t.dim).child(dir)))
+        .when(Boolean(mark), el => el.child(markBall(mark, t, false)));
     });
   }
 
