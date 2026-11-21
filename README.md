@@ -45,15 +45,16 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 
 
 
-### 配套：Chat 面板（`convo/`）
 
-右侧面板的第四个标签，解析当前标签里 CodeBuddy 的会话，摊开这次对话留下了什么：
+### Chat 标签（同一个 mod 的第二角色）
+
+右侧面板的第四个标签，解析当前标签里 CodeBuddy 的会话，摊开这次对话留下了什么。它和 Files 是**同一个 mod**：布局里给 filescout 加 `props.role = "chat"` 就是 Chat，图标、主题、右键菜单全共用那一套。
 
 - **会话头**：标题（`ai-title`）、agent 与模型、轮次、最后活动时间、当前状态点
-- **产物**：这次对话写过 / 改过的文件（工作区内一组，工作区外默认折叠）；点一下独立打开预览浮窗，不切面板；右键就是 Files 面板那一组菜单——查看文件、查看 diff、用默认程序打开、在文件管理器中定位、复制路径、插入 agent
-- **子任务**：`~/.codebuddy/tasks/<sid>/` 里的任务清单，进行中 → 待办 → 已完成，标题给 `完成数/总数`
-- 数据由 `convo/scan.js`（node）解析：首次全量约 0.2s，之后按 offset 只读新增行；会话文件一变（`watchFolder`）和每 4 秒各看一次
-- 只解析本机的 CodeBuddy 会话；别的 agent 或没有会话的目录会给出空状态
+- **产物**：这次对话写过 / 改过的文件。**文件名亮、目录暗**，图标按扩展名走（和文件树同一张 90+ 映射表）；工作区内一组、工作区外折叠。点一下**独立打开预览浮窗**，不切面板；右键就是 Files 那一组菜单——查看文件、查看 diff、用默认程序打开、在文件管理器中定位、用编辑器打开、复制路径、插入 agent
+- **子任务**：`~/.codebuddy/tasks/<sid>/` 里的清单，进行中（转圈）→ 待办（空心圈）→ 已完成（绿勾），小标题给 `完成数/总数`
+- 数据由仓库根的 `scan.js`（node）解析：首次全量约 0.2s，之后按 offset 只读新增行；会话文件一变（`watchFolder`）和每 4 秒各看一次
+- 只解析本机的 CodeBuddy 会话；别的 agent 或没有会话的目录给出空状态
 
 ## 语言 / Language
 
@@ -100,9 +101,7 @@ filescout lists with node (~80ms) and falls back to the same PowerShell call whe
 
 ```sh
 cp -r filescout ~/.config/herdr-app/mods/
-cp -r convo ~/.config/herdr-app/mods/
 herdr-app check ~/.config/herdr-app/mods/filescout
-herdr-app check ~/.config/herdr-app/mods/convo
 ```
 
 然后在布局里把 `"mod": "files"` 换成 `"mod": "filescout"`。**不要直接改官方 `main.json`**
@@ -114,18 +113,18 @@ herdr-app do layout.clone '{"name":"main","as":"main-plus"}'
 ```
 
 
-Chat 标签还要两处接线：把 `convo` 挂进右侧面板的 stack——
+
+Chat 标签是同一个 mod 的第二个角色，布局里加一个 block 就行：
 
 ```json
-{ "id": "convo", "type": "block", "content": { "mod": "convo" } }
+{ "id": "convo", "type": "block", "content": { "mod": "filescout", "props": { "role": "chat" } } }
 ```
 
-并在 tab 栏那个 mod（默认是 `tabs`，克隆过的按自己那份改）里把 `"convo"` 加进 `enabled`，再加一个按钮：
+再在 tab 栏那个 mod（默认是 §tabs§，克隆过的按自己那份改）里把 §"convo"§ 加进 §enabled§，并加一个按钮：
 
 ```js
-.when(enabled.includes("convo"), el => el.child(panelButton("convo", "Chat", "mods/convo/icons/chat.svg")))
+.when(enabled.includes("convo"), el => el.child(panelButton("convo", "Chat", "mods/filescout/icons/chat.svg")))
 ```
-
 ## 它会运行什么 / What it runs
 
 | 场景 | 命令 |
@@ -142,7 +141,7 @@ Chat 标签还要两处接线：把 `convo` 挂进右侧面板的 stack——
 | 用编辑器打开 | `<bin> <path>`（`code` / `cursor` / `zed` …） |
 | 在这里开终端 | `herdr-app` 命令 `tab.new {folder}` |
 | 插入 agent | `herdr-app` 命令 `pane.focus` + `terminal.paste`（写系统剪贴板） |
-| Chat 面板解析对话 | `node <appHome>/mods/convo/scan.js <cwd> [会话文件] [offset]`，只读 `~/.codebuddy/projects/*/*.jsonl` 与 `~/.codebuddy/tasks/<sid>/*.json` |
+| Chat 面板解析对话 | `node <appHome>/mods/filescout/scan.js <cwd> [会话文件] [offset]`，只读 `~/.codebuddy/projects/*/*.jsonl` 与 `~/.codebuddy/tasks/<sid>/*.json` |
 
 ## 限制 / Limits
 

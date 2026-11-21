@@ -17,9 +17,9 @@
 | F7 发送到 agent（带指令） | 不做（用户确认不需要） |
 | F8 新建文件 / 文件夹 / 重命名 | 不做（用户确认不需要） |
 | diff 可读性改造（VSCode 风格，见文末） | 已做 |
-| 代码语法高亮补齐（语言映射 + 12 个配色槽） | 已做（见 §七） |
-| 图标体系（文件夹图标 + 补齐扩展名/文件名映射） | 已做（见 §七） |
-| 对话解析 tab（Chat，产物 / 子任务） | 已做（见 §八） |
+| 代码语法高亮补齐（语言映射 + 12 个配色槽） | 已做（见 `七） |
+| 图标体系（文件夹图标 + 补齐扩展名/文件名映射） | 已做（见 `七） |
+| 对话解析 tab（Chat，产物 / 子任务） | 已做（见 `八） |
 
 
 ## 一、竞品对照
@@ -34,7 +34,7 @@
 
 **filescout 已有**：惰性树、文本预览 + 语法高亮、git 状态染色（名字/目录）、`N 个改动` 与 `+/-` 行数、Markdown 渲染与源码切换、放大浮窗、预览失败时的「用默认程序打开」、右键菜单（打开 / 复制相对·绝对路径 / 插入 `@` 到 agent / 查看 diff）、diff 浮窗（单栏·分栏）、Material 图标、中英文案。
 
-**结论**：不追 Preview Plus 的编辑器/PDF/Mermaid 那种大工程；优先补「搜索、只看改动、图片预览、定位/编辑器/终端、预览跟随、排序与路径细节」，再加一个克制的文件管理子集（不做删除，见 §8）。
+**结论**：不追 Preview Plus 的编辑器/PDF/Mermaid 那种大工程；优先补「搜索、只看改动、图片预览、定位/编辑器/终端、预览跟随、排序与路径细节」，再加一个克制的文件管理子集（不做删除，见 `8）。
 
 ---
 
@@ -225,7 +225,7 @@
 
 - 折叠未改动区域（「展开 N 行」）—— git 已只给 3 行上下文，收益小。
 - 换行模式的行内高亮（见上）。
-- 语法高亮 diff。（仍未做；但预览的语法高亮已在 §七 补齐。）
+- 语法高亮 diff。（仍未做；但预览的语法高亮已在 `七 补齐。）
 
 ---
 
@@ -280,12 +280,10 @@
 
 | 件 | 内容 |
 | --- | --- |
-| `mods/convo/main.js` | View：会话头（标题 / agent / 模型 / 轮次 / 最后活动）、产物列表、子任务列表、空状态 |
-| `mods/convo/scan.js` | 被 `exec("node", [scan, cwd])` 调；回 `{session, artifacts, tasks}` JSON；支持 `--offset` 增量 |
-| `mods/convo/mod.json` | `{ "place": "none" }`，只靠布局挂进 stack |
-| `layouts/main-custom.json` | `panel-body` children 追加 `{id:"convo", type:"block", content:{mod:"convo"}}` |
-| `mods/tabs-graph/main.js` | `enabled` 追加 `"convo"`；Changes 后加 `panelButton("convo", "Chat", …)` |
-| `shared.json` | 不动（`workspace.panels` 只管 Files/Changes 两个官方项） |
+| `main.js` 的 `Chat` 类 | 会话头、产物列表（文件名亮 / 目录暗，图标复用 `FILE_ICON`）、子任务（转圈 / 空心圈 / 绿勾） |
+| `scan.js` | 被 `exec("node", [scan, cwd, file, offset])` 调；回 `{session, artifacts, tasks}`；offset 增量 |
+| 布局 `panel-body` | 追加 `{id:"convo", content:{mod:"filescout", props:{role:"chat"}}}`，不占独立 mod 名 |
+| `mods/tabs-graph/main.js` | `enabled` 加 `"convo"` + 一个 `panelButton("convo", "Chat", …)` |
 
 ### 8.4 已定（2026-11-21）
 
