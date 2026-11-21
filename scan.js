@@ -44,7 +44,7 @@ function sessions() {
       const full = path.join(root, d.name, f);
       try {
         const st = fs.statSync(full);
-        if (st.size) out.push({ full, size: st.size, mtime: st.mtimeMs });
+        if (st.size) out.push({ full, size: st.size, mtime: st.mtimeMs, born: st.birthtimeMs || 0 });
       } catch {}
     }
   }
@@ -95,7 +95,17 @@ const cwd = path.resolve(process.argv[2] || ".");
 const wantFile = process.argv[3] || "";
 const from = Math.max(0, Number(process.argv[4]) || 0);
 
-const found = wantFile ? { full: wantFile } : findSession(cwd);
+let found = wantFile ? { full: wantFile } : findSession(cwd);
+// /clear 会另起一个会话：同目录里出现「在当前文件停更之后才创建」的文件，就换过去从头读。
+if (wantFile && found) {
+  try {
+    const st = fs.statSync(wantFile);
+    const latest = findSession(cwd);
+    if (latest && norm(latest.full) !== norm(wantFile) && latest.born > st.mtimeMs && latest.mtime > st.mtimeMs) {
+      found = latest;
+    }
+  } catch {}
+}
 if (!found) {
   process.stdout.write(JSON.stringify({ none: true }));
   process.exit(0);
@@ -131,9 +141,9 @@ const cut = buf.lastIndexOf(10);
 const text = cut >= 0 ? buf.slice(0, cut).toString("utf8") : "";
 const offset = start + (cut >= 0 ? cut + 1 : 0);
 
-const sid = path.basename(found.full).replace(/\.jsonl$/, "");
+const fileSid = path.basename(found.full).replace(/\.jsonl$/, "");
 const acc = {
-  sid,
+  sid: null,
   title: null,
   model: null,
   turns: 0,
@@ -161,6 +171,7 @@ for (const line of text.split("\n")) {
   } catch {
     continue;
   }
+  if (r.sessionId) acc.sid = r.sessionId;
   if (r.timestamp) acc.lastAt = Math.max(acc.lastAt, r.timestamp);
   if (r.type === "ai-title" && r.aiTitle) acc.title = r.aiTitle;
   if (r.type === "message" && r.role === "user") acc.turns += 1;
@@ -196,6 +207,7 @@ for (const line of text.split("\n")) {
   if (backups) for (const p of Object.keys(backups)) touch(p, r.timestamp, false);
 }
 
+const sid = acc.sid || fileSid;
 const tasks = readTasks(sid);
 const artifacts = [...acc.artifacts.values()].sort((a, b) => b.last - a.last);
 

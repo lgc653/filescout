@@ -542,7 +542,8 @@ class Chat extends View {
   absorb(d, reset) {
     this.reason = null;
     const s = d.session;
-    if (reset || !this.data || this.data.session.id !== s.id) {
+    // d.reset：scan 发现同目录里起了新会话（/clear），会从头读，这边也要清掉旧产物。
+    if (reset || d.reset || !this.data || this.data.session.id !== s.id) {
       this.data = { session: { ...s }, artifacts: new Map(), tasks: d.tasks ?? [] };
     } else {
       const cur = this.data.session;
