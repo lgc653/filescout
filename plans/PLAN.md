@@ -19,6 +19,7 @@
 | diff 可读性改造（VSCode 风格，见文末） | 已做 |
 | 代码语法高亮补齐（语言映射 + 12 个配色槽） | 已做（见 §七） |
 | 图标体系（文件夹图标 + 补齐扩展名/文件名映射） | 已做（见 §七） |
+| 对话解析 tab（Chat，产物 / 子任务） | 已做（见 §八） |
 
 
 ## 一、竞品对照
@@ -199,7 +200,7 @@
 
 - `untab()` —— 制表符按 4 列对齐展开（Text 不画 tab）。
 - `changedSpan(a, b)` / `span3(line, other)` —— 一对增删行算公共前缀和公共后缀，中间那段就是「真正变了的部分」，切成 `pre / mid / suf`。
-- `diffRows(lines)` —— unified diff → 单栏行数组（`meta` / `hunk` / `ctx` / `del` / `add`）。丢掉 `diff --git`、`index`、`---`、`+++` 这些单文件场景的噪声行；`\\ No newline` 归到 meta。行数上限 `DIFF_CAP = 20000`。
+- `diffRows(lines)` —— unified diff → 单栏行数组（`meta` / `hunk` / `ctx` / `del` / `add`）。丢掉 `diff --git`、`index`、`---`、`+++` 这些单文件场景的噪声行；`\ No newline` 归到 meta。行数上限 `DIFF_CAP = 20000`。
 - `splitRows(rows)` —— 上面那份再折一次成分栏行数组（成对的 `-`/`+` 折成一行，配不上的对面是 `null` = 填充行）。
 
 `showDiff()`：`git diff` 补 `--no-color`（防 `color.diff=always`）和 `--unified=3`；未跟踪文件补一行 hunk 头再整份算新增；结果同时算出 `diffRows.{unified,split}` 和本文件的 `diffStat`。
@@ -254,3 +255,42 @@
 
 `herdr-app check` 通过、`status` 的 `errors` 为 `[]`；`.py` 预览 + 仓库目录树截图核对图标与配色。
 
+---
+
+## 八、对话解析 tab（方案，2026-11-21）
+
+需求：右侧 `panel-body` 再加一个 tab，解析当前 agent 的会话，显示**产物**（对话里能解析出的生成物路径）和**子任务**等。
+
+### 8.1 数据链（本机实测过）
+
+1. **这是哪个对话**：`focused().tab` 在当前窗口仍是有效上下文；用 `panes()` 找该 tab 里 `app !== null` 的 pane，拿到 `cwd`、agent 名、`status`。点了右侧 mod 面板后 `focused().pane/terminal` 会是 null，但 `tab` 还在，够用。
+2. **会话文件**：CodeBuddy 在 `~/.codebuddy/projects/<slug>/<sessionId>.jsonl`（slug 不是简单转义：中文、空格都保留，只把盘符冒号和路径分隔符换成 `-`，所以别自己拼路径）。做法是遍历 `projects/*/` 下的 jsonl，**读首行拿 `cwd` 比较** + 取 mtime 最新。Claude 是 `~/.claude/projects/E--Dev-.../<sessionId>.jsonl`，格式不同。
+3. **产物**：
+   - `file-history-snapshot` 的 `snapshot.trackedFileBackups` 键是宿主自己记的「这次对话动过的文件」，累积全量。PTC 模式下 Write/Edit 藏在 REPL 的 code 字符串里，靠工具名解析不出来，这个快照是唯一可靠来源（实测抓到了本仓库的 `README.md` / `main.js`）。
+   - 兜底：`function_call` 里 `name ∈ {Write, Edit, MultiEdit, NotebookEdit}` 的 `file_path`。
+   - 快照混着 `%TEMP%` 下的临时脚本（`gen-icons.mjs`、`scout-test/t.py`）和工作区外的文件，要按「是否在 cwd 内」分档：区内正常列，区外折叠或压暗。
+4. **子任务**：`~/.codebuddy/tasks/<sessionId>/<n>.json`，每份 `{id, subject, status, activeForm, createdAt, updatedAt}`。比从 jsonl 重放 `TaskCreate`/`TaskUpdate` 可靠，jsonl 只做兜底。
+5. **元信息**：`ai-title` 给标题，`function_call.providerData.model` 给模型，`type=message,role=user` 数轮次，`timestamp` 给最后活动时间。
+
+### 8.2 性能
+
+3.3MB / 47 条记录的会话，node 全量解析 **0.18s**（含 node 启动）。首次进 tab 扫一次没问题；之后不能每帧扫——mod 记 offset 只解析新增行，`watchFolder(会话目录)` 触发，10s 定时兜底。
+
+### 8.3 实现拆解
+
+| 件 | 内容 |
+| --- | --- |
+| `mods/convo/main.js` | View：会话头（标题 / agent / 模型 / 轮次 / 最后活动）、产物列表、子任务列表、空状态 |
+| `mods/convo/scan.js` | 被 `exec("node", [scan, cwd])` 调；回 `{session, artifacts, tasks}` JSON；支持 `--offset` 增量 |
+| `mods/convo/mod.json` | `{ "place": "none" }`，只靠布局挂进 stack |
+| `layouts/main-custom.json` | `panel-body` children 追加 `{id:"convo", type:"block", content:{mod:"convo"}}` |
+| `mods/tabs-graph/main.js` | `enabled` 追加 `"convo"`；Changes 后加 `panelButton("convo", "Chat", …)` |
+| `shared.json` | 不动（`workspace.panels` 只管 Files/Changes 两个官方项） |
+
+### 8.4 已定（2026-11-21）
+
+1. tab 名字 **Chat**，图标是扁平线稿对话气泡。
+2. 只做 CodeBuddy；Claude 留扩展点（scan.js 换一个 formats 分支即可）。
+3. 点产物**独立打开**：直接 `openOverlay` 一个 filescout 预览浮窗（`kind:"window"`），不切 Files 标签；工作区外的文件把它的目录当 root，一样能预览。
+4. 右键**复用 Files 面板那一组菜单**：`openOverlay({mod:"filescout", kind:"popup", props:{menu:{…}}})`。为此给 filescout 的菜单加了两个开关：`menu.view`（「查看文件」项）、`menu.diff`（没有 git 状态也出「查看 diff」）；`editors: null` 时回退到 `globalThis.__filescoutEditors`，编辑器二级菜单照样有。
+5. 实测：打开面板首扫约 0.2s；写下新文件 4 秒内出现在「产物」，会话文件一变立即刷新。

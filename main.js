@@ -5,7 +5,7 @@ import { View, div, svg, image, list } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Input, InputState, Scrollbar, v_virtual_list } from "gpui-base";
 import {
   spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome,
-  props, openOverlay, closeOverlay, run, notify,
+  props, openOverlay, closeOverlay, run, notify, shared,
 } from "herdr";
 
 function location() {
@@ -197,7 +197,7 @@ const I18N = {
     searching: "正在搜索…", noResults: "没有匹配的文件",
     openFolder: "在文件管理器中打开", openApp: "用默认程序打开",
     reveal: "在文件管理器中定位", openIn: n => `用 ${n} 打开`, openWith: "用编辑器打开", termHere: "在这里开终端",
-    copyRel: "复制相对路径", copyAbs: "复制绝对路径",
+    copyRel: "复制相对路径", copyAbs: "复制绝对路径", view: "查看文件",
     insertRel: "把相对路径插入 agent", insertAbs: "把绝对路径插入 agent",
     diff: "查看 diff",
     noFiles: "没有文件", noFolder: "没有目录", listErr: "读不到这个目录", loadingFiles: "正在读取…", loadingFile: "正在读取文件…", loadingDiff: "正在读取 diff…",
@@ -219,7 +219,7 @@ const I18N = {
     searching: "Searching…", noResults: "No matching files",
     openFolder: "Open in file manager", openApp: "Open with default app",
     reveal: "Reveal in file manager", openIn: n => `Open in ${n}`, openWith: "Open with editor", termHere: "Open terminal here",
-    copyRel: "Copy relative path", copyAbs: "Copy absolute path",
+    copyRel: "Copy relative path", copyAbs: "Copy absolute path", view: "View file",
     insertRel: "Insert relative path into agent", insertAbs: "Insert absolute path into agent",
     diff: "View diff",
     noFiles: "No files", noFolder: "No folder", listErr: "Cannot read this folder", loadingFiles: "Loading files…", loadingFile: "Loading file…", loadingDiff: "Loading diff…",
@@ -437,6 +437,8 @@ export default class Filescout extends View {
     this.overlay = p.overlay ?? null;
     this.openedFile = p.file ?? null;
     this.diffFile = p.diff ?? null;
+    // 别的面板（Chat）通过 shared 请我打开文件，记下处理过的那个时间戳。
+    this.openAt = 0;
     // 浮窗（放大 / 看 diff）自己拿键盘，Esc 关掉它。
     if (this.overlay) this.handle.focus();
     // 编辑器只探测一次，所有面板副本共用同一份结果。
@@ -624,6 +626,17 @@ export default class Filescout extends View {
     }
     this.treeVer++;
     cx.notify();
+  }
+
+  /** Chat 面板点了产物：shared 里带时间戳，只处理一次。工作区外的路径不归这棵树管。 */
+  syncOpen(cx) {
+    const req = shared("filescout.open");
+    if (!req || req.at === this.openAt) return;
+    this.openAt = req.at;
+    const root = slashed(this.root ?? "").replace(/\/+$/, "");
+    const p = slashed(req.path ?? "");
+    if (!root || !req.path || !p.toLowerCase().startsWith(root.toLowerCase() + "/")) return;
+    this.show(p.slice(root.length + 1), cx);
   }
 
   show(path, cx) {
@@ -1165,12 +1178,14 @@ export default class Filescout extends View {
       for (const [bin, name] of m.editors ?? []) out.push([name, () => this.openTargetIn(bin)]);
       return out;
     }
-    if (m.mark) out.push([this.L("diff"), () => this.viewDiff()]);
+    // 别的面板（Chat）也会用这个菜单：它会传 view / diff，让「查看」「diff」总在。
+    if (m.view) out.push([this.L("view"), () => this.viewFile()]);
+    if (m.mark || m.diff) out.push([this.L("diff"), () => this.viewDiff()]);
     out.push([this.L(m.dir ? "openFolder" : "openApp"), () => this.openTarget()]);
     // 远程 space 上没有本机的文件管理器和编辑器，那几项就不出现。
     if (!m.on) {
       out.push([this.L("reveal"), () => this.revealTarget()]);
-      const editors = m.editors ?? [];
+      const editors = m.editors ?? globalThis.__filescoutEditors ?? [];
       if (editors.length === 1) out.push([this.L("openIn", editors[0][1]), () => this.openTargetIn(editors[0][0])]);
       else if (editors.length > 1) out.push([this.L("openWith") + " ›", () => this.openEditorsMenu()]);
     }
@@ -1191,6 +1206,17 @@ export default class Filescout extends View {
       at: at ? { x: at.x + 286, y: at.y } : "pointer",
       width: 200,
       props: { lang: this.lang, menu: { root, path, dir, on, kind: "editors", editors, at } },
+    });
+  }
+
+  /** 菜单里的「查看文件」：单独开一个预览浮窗，不用先切回 Files 面板。 */
+  viewFile() {
+    const { root, path, on } = this.menu;
+    closeOverlay(props().overlay);
+    reopen("view", {
+      mod: "filescout", kind: "window", frame: "none",
+      width: 0.86, height: 0.8,
+      props: { lang: this.lang, root, on, file: path },
     });
   }
 
@@ -1353,6 +1379,7 @@ export default class Filescout extends View {
   paint(cx) {
     if (this.mode === "menu") return this.renderMenu(cx);
     if (this.ctxKey() !== this.context?.key) this.refresh(cx);
+    this.syncOpen(cx);
     const t = theme(), count = Object.keys(this.marks).length;
     const tools = this.tools(t, count);
     // 看 diff 时表头给的是这个文件的行数，比整个仓库的总数有用。
