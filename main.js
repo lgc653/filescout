@@ -438,12 +438,6 @@ function chatTime(ts) {
 const CHAT_STATUS = (s) =>
   s === "working" ? "#42a5f5" : s === "blocked" ? "#ef5350" : s === "done" ? "#66bb6a" : "#9e9e9e";
 
-const chatExt = (p) => {
-  const name = String(p).split(/[\\/]/).pop() ?? "";
-  const i = name.lastIndexOf(".");
-  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
-};
-
 /** Chat：读当前标签里 CodeBuddy 的会话日志，列这次对话动过的文件与它的任务。
  *  和 Files 共用图标、主题与右键菜单（右键产物直接弹 Files 的 menu overlay）。 */
 class Chat extends View {
@@ -658,7 +652,6 @@ class Chat extends View {
 
   /** 产物：文件名亮、目录暗，图标直接用 Files 那一套（90 多条扩展名映射）。 */
   artifactRow(t, a, i) {
-    const icon = FILE_ICON[chatExt(a.path)] ?? "document";
     const cut = a.rel.lastIndexOf("/");
     const name = cut >= 0 ? a.rel.slice(cut + 1) : a.rel;
     const dir = cut >= 0 ? a.rel.slice(0, cut) : "";
@@ -666,7 +659,7 @@ class Chat extends View {
       .hover((s) => s.bg(t.hover)).tooltip(a.path)
       .on_click((_e, cx) => { cx.stop_propagation(); this.preview(a); })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a); })
-      .child(svg(`mods/filescout/icons/${icon}.svg`).size(15).flex_none())
+      .child(iconEl(name, false, t))
       .child(v_flex().flex_1().min_w(0).gap(1)
         .child(h_flex().min_w(0).gap(5).items_center()
           .child(div().min_w(0).truncate().text_color(a.outside ? t.muted : t.foreground).child(name))
