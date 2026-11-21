@@ -671,7 +671,8 @@ class Chat extends View {
         .child(h_flex().min_w(0).gap(5).items_center()
           .child(div().min_w(0).truncate().text_color(a.outside ? t.muted : t.foreground).child(name))
           .when(a.edits > 1, (el) => el.child(div().text_size(10).text_color(t.dim).child(`×${a.edits}`))))
-        .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(dir || this.target?.cwd || "")))
+        .child(div().min_w(0).truncate().text_size(11).text_color(t.dim)
+          .child(dir || (String(this.target?.cwd ?? "").split(/[\\/]/).filter(Boolean).pop() ?? ""))))
       .child(div().text_size(10).text_color(t.dim).child(this.ago(a.last)));
   }
 
