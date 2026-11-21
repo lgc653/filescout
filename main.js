@@ -5,7 +5,7 @@ import { View, div, svg, image, list } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Input, InputState, Scrollbar, v_virtual_list } from "gpui-base";
 import {
   spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome,
-  props, openOverlay, closeOverlay, run, notify, shared,
+  props, openOverlay, closeOverlay, run, notify,
 } from "herdr";
 
 function location() {
@@ -595,8 +595,10 @@ class Chat extends View {
   /** 独立打开：不切 Files 面板，直接开一个 Files 的预览浮窗。 */
   preview(a) {
     const { root, file } = this.locate(a);
-    openOverlay({
-      mod: "filescout", kind: "window", frame: "none", key: "filescout-preview",
+    // key 会让宿主复用同一扇窗，props 不跟着换（点哪个都还是第一份）；改成关掉上一扇再开。
+    if (this.viewId) { try { closeOverlay(this.viewId); } catch { /* 早就关了 */ } }
+    this.viewId = openOverlay({
+      mod: "filescout", kind: "window", frame: "none",
       width: 0.86, height: 0.8,
       props: { lang: this.lang, root, on: null, file },
     });
@@ -772,8 +774,6 @@ export default class Filescout extends View {
     this.overlay = p.overlay ?? null;
     this.openedFile = p.file ?? null;
     this.diffFile = p.diff ?? null;
-    // 别的面板（Chat）通过 shared 请我打开文件，记下处理过的那个时间戳。
-    this.openAt = 0;
     // 浮窗（放大 / 看 diff）自己拿键盘，Esc 关掉它。
     if (this.overlay) this.handle.focus();
     // 编辑器只探测一次，所有面板副本共用同一份结果。
@@ -963,16 +963,6 @@ export default class Filescout extends View {
     cx.notify();
   }
 
-  /** Chat 面板点了产物：shared 里带时间戳，只处理一次。工作区外的路径不归这棵树管。 */
-  syncOpen(cx) {
-    const req = shared("filescout.open");
-    if (!req || req.at === this.openAt) return;
-    this.openAt = req.at;
-    const root = slashed(this.root ?? "").replace(/\/+$/, "");
-    const p = slashed(req.path ?? "");
-    if (!root || !req.path || !p.toLowerCase().startsWith(root.toLowerCase() + "/")) return;
-    this.show(p.slice(root.length + 1), cx);
-  }
 
   show(path, cx) {
     this.code?.release(); this.code = null; this.file = path; this.fileError = null; this.text = null; this.image = null; this.diff = false;
@@ -1715,7 +1705,6 @@ export default class Filescout extends View {
     if (this.chat) return this.chat.render(cx);
     if (this.mode === "menu") return this.renderMenu(cx);
     if (this.ctxKey() !== this.context?.key) this.refresh(cx);
-    this.syncOpen(cx);
     const t = theme(), count = Object.keys(this.marks).length;
     const tools = this.tools(t, count);
     // 看 diff 时表头给的是这个文件的行数，比整个仓库的总数有用。
