@@ -1,7 +1,3 @@
 # Written by herdr-app when it loads a mod
 gpui-kit.d.ts
 jsconfig.json
-
-# gpui-shell 在 mod 目录生成的类型提示（本地生成，不进仓库）
-gpui-kit.d.ts
-jsconfig.json
